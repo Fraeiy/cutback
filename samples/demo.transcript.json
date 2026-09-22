@@ -1,0 +1,248 @@
+{
+  "id": "demo-fixture",
+  "model": null,
+  "text": "Ignore this intro. I tested this tool yesterday. The first cut should land on this sentence. Keep the pause before this last sentence.",
+  "words": [
+    {
+      "id": "s01w0",
+      "sentenceId": "s01",
+      "text": "Ignore",
+      "startMs": 0,
+      "endMs": 721,
+      "confidence": 0.4
+    },
+    {
+      "id": "s01w1",
+      "sentenceId": "s01",
+      "text": "this",
+      "startMs": 721,
+      "endMs": 1443,
+      "confidence": 0.4
+    },
+    {
+      "id": "s01w2",
+      "sentenceId": "s01",
+      "text": "intro.",
+      "startMs": 1443,
+      "endMs": 2164,
+      "confidence": 0.4
+    },
+    {
+      "id": "s02w0",
+      "sentenceId": "s02",
+      "text": "I",
+      "startMs": 2514,
+      "endMs": 3056,
+      "confidence": 0.4
+    },
+    {
+      "id": "s02w1",
+      "sentenceId": "s02",
+      "text": "tested",
+      "startMs": 3056,
+      "endMs": 3598,
+      "confidence": 0.4
+    },
+    {
+      "id": "s02w2",
+      "sentenceId": "s02",
+      "text": "this",
+      "startMs": 3598,
+      "endMs": 4139,
+      "confidence": 0.4
+    },
+    {
+      "id": "s02w3",
+      "sentenceId": "s02",
+      "text": "tool",
+      "startMs": 4139,
+      "endMs": 4681,
+      "confidence": 0.4
+    },
+    {
+      "id": "s02w4",
+      "sentenceId": "s02",
+      "text": "yesterday.",
+      "startMs": 4681,
+      "endMs": 5223,
+      "confidence": 0.4
+    },
+    {
+      "id": "s03w0",
+      "sentenceId": "s03",
+      "text": "The",
+      "startMs": 6673,
+      "endMs": 7075,
+      "confidence": 0.4
+    },
+    {
+      "id": "s03w1",
+      "sentenceId": "s03",
+      "text": "first",
+      "startMs": 7075,
+      "endMs": 7478,
+      "confidence": 0.4
+    },
+    {
+      "id": "s03w2",
+      "sentenceId": "s03",
+      "text": "cut",
+      "startMs": 7478,
+      "endMs": 7880,
+      "confidence": 0.4
+    },
+    {
+      "id": "s03w3",
+      "sentenceId": "s03",
+      "text": "should",
+      "startMs": 7880,
+      "endMs": 8283,
+      "confidence": 0.4
+    },
+    {
+      "id": "s03w4",
+      "sentenceId": "s03",
+      "text": "land",
+      "startMs": 8283,
+      "endMs": 8685,
+      "confidence": 0.4
+    },
+    {
+      "id": "s03w5",
+      "sentenceId": "s03",
+      "text": "on",
+      "startMs": 8685,
+      "endMs": 9087,
+      "confidence": 0.4
+    },
+    {
+      "id": "s03w6",
+      "sentenceId": "s03",
+      "text": "this",
+      "startMs": 9087,
+      "endMs": 9490,
+      "confidence": 0.4
+    },
+    {
+      "id": "s03w7",
+      "sentenceId": "s03",
+      "text": "sentence.",
+      "startMs": 9490,
+      "endMs": 9892,
+      "confidence": 0.4
+    },
+    {
+      "id": "s04w0",
+      "sentenceId": "s04",
+      "text": "Keep",
+      "startMs": 11742,
+      "endMs": 12218,
+      "confidence": 0.4
+    },
+    {
+      "id": "s04w1",
+      "sentenceId": "s04",
+      "text": "the",
+      "startMs": 12218,
+      "endMs": 12693,
+      "confidence": 0.4
+    },
+    {
+      "id": "s04w2",
+      "sentenceId": "s04",
+      "text": "pause",
+      "startMs": 12693,
+      "endMs": 13169,
+      "confidence": 0.4
+    },
+    {
+      "id": "s04w3",
+      "sentenceId": "s04",
+      "text": "before",
+      "startMs": 13169,
+      "endMs": 13644,
+      "confidence": 0.4
+    },
+    {
+      "id": "s04w4",
+      "sentenceId": "s04",
+      "text": "this",
+      "startMs": 13644,
+      "endMs": 14120,
+      "confidence": 0.4
+    },
+    {
+      "id": "s04w5",
+      "sentenceId": "s04",
+      "text": "last",
+      "startMs": 14120,
+      "endMs": 14595,
+      "confidence": 0.4
+    },
+    {
+      "id": "s04w6",
+      "sentenceId": "s04",
+      "text": "sentence.",
+      "startMs": 14595,
+      "endMs": 15071,
+      "confidence": 0.4
+    }
+  ],
+  "sentences": [
+    {
+      "id": "s01",
+      "text": "Ignore this intro.",
+      "startMs": 0,
+      "endMs": 2164,
+      "wordIds": [
+        "s01w0",
+        "s01w1",
+        "s01w2"
+      ]
+    },
+    {
+      "id": "s02",
+      "text": "I tested this tool yesterday.",
+      "startMs": 2514,
+      "endMs": 5223,
+      "wordIds": [
+        "s02w0",
+        "s02w1",
+        "s02w2",
+        "s02w3",
+        "s02w4"
+      ]
+    },
+    {
+      "id": "s03",
+      "text": "The first cut should land on this sentence.",
+      "startMs": 6673,
+      "endMs": 9892,
+      "wordIds": [
+        "s03w0",
+        "s03w1",
+        "s03w2",
+        "s03w3",
+        "s03w4",
+        "s03w5",
+        "s03w6",
+        "s03w7"
+      ]
+    },
+    {
+      "id": "s04",
+      "text": "Keep the pause before this last sentence.",
+      "startMs": 11742,
+      "endMs": 15071,
+      "wordIds": [
+        "s04w0",
+        "s04w1",
+        "s04w2",
+        "s04w3",
+        "s04w4",
+        "s04w5",
+        "s04w6"
+      ]
+    }
+  ]
+}

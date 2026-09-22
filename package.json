@@ -1,0 +1,23 @@
+{
+  "name": "cutback",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Voice-controlled video editor for the AssemblyAI Voice Agent hackathon.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm run dev -w @cutback/server\" \"npm run dev -w @cutback/web\"",
+    "test": "npm run test -w @cutback/timeline && npm run test -w @cutback/server",
+    "build": "npm run build -w @cutback/web",
+    "start": "npm run start -w @cutback/server",
+    "typecheck": "npm run typecheck -w @cutback/timeline && npm run typecheck -w @cutback/server && npm run typecheck -w @cutback/web",
+    "sample": "tsx scripts/generate-sample.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.20.5"
+  }
+}

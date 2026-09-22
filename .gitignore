@@ -1,0 +1,12 @@
+node_modules/
+dist/
+data/
+.env
+.env.local
+.vercel/
+*.log
+.DS_Store
+apps/web/dist/
+coverage/
+tmp/
+samples/.build/

@@ -1,0 +1,11 @@
+services:
+  cutback:
+    build: .
+    ports:
+      - "8791:8791"
+    env_file:
+      - .env
+    volumes:
+      - cutback-data:/data
+volumes:
+  cutback-data:
