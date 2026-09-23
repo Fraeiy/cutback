@@ -102,6 +102,10 @@ export interface HistoryEntry {
   startMs: number | null;
   endMs: number | null;
   action: "remove" | "trim_before" | "trim_after" | null;
+  /** Stable timeline neighbors captured when a range was removed. */
+  restoreBeforeSpanId?: string | null;
+  restoreAfterSpanId?: string | null;
+  restoreIndex?: number | null;
 }
 
 export interface EditState {

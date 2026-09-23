@@ -126,7 +126,13 @@ export function removeRange(
   return { spans: settleSpans(next, durationMs), removedMs };
 }
 
-export function insertRange(spans: KeepSpan[], startMs: number, endMs: number, durationMs: number): KeepSpan[] {
+export function insertRange(
+  spans: KeepSpan[],
+  startMs: number,
+  endMs: number,
+  durationMs: number,
+  placement?: { beforeSpanId?: string | null; afterSpanId?: string | null; index?: number | null },
+): KeepSpan[] {
   const start = clamp(Math.min(startMs, endMs), 0, durationMs);
   const end = clamp(Math.max(startMs, endMs), 0, durationMs);
   if (end - start < MIN_SPAN_MS) return settleSpans(spans, durationMs);
@@ -142,9 +148,30 @@ export function insertRange(spans: KeepSpan[], startMs: number, endMs: number, d
   });
   if (!expanded) {
     const piece: KeepSpan = { id: newId("span"), sourceStartMs: start, sourceEndMs: end };
-    const index = next.findIndex((span) => span.sourceStartMs >= end - 1);
-    if (index === -1) next.push(piece);
-    else next.splice(index, 0, piece);
+    const afterIndex = placement?.afterSpanId ? next.findIndex((span) => span.id === placement.afterSpanId) : -1;
+    const beforeIndex = placement?.beforeSpanId ? next.findIndex((span) => span.id === placement.beforeSpanId) : -1;
+    let index = afterIndex >= 0 ? afterIndex : beforeIndex >= 0 ? beforeIndex + 1 : -1;
+    if (index < 0 && placement?.index !== undefined && placement.index !== null) {
+      index = Math.max(0, Math.min(next.length, placement.index));
+    }
+    if (index < 0) {
+      let previousIndex = -1;
+      let previousEnd = -Infinity;
+      let followingIndex = -1;
+      let followingStart = Infinity;
+      next.forEach((span, spanIndex) => {
+        if (span.sourceEndMs <= start + 1 && span.sourceEndMs > previousEnd) {
+          previousEnd = span.sourceEndMs;
+          previousIndex = spanIndex;
+        }
+        if (span.sourceStartMs >= end - 1 && span.sourceStartMs < followingStart) {
+          followingStart = span.sourceStartMs;
+          followingIndex = spanIndex;
+        }
+      });
+      index = previousIndex >= 0 ? previousIndex + 1 : followingIndex >= 0 ? followingIndex : next.length;
+    }
+    next.splice(index, 0, piece);
   }
   return settleSpans(next, durationMs);
 }

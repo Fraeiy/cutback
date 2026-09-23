@@ -391,6 +391,19 @@ test("restore puts one sentence back and leaves the other cut and the captions",
   assert.equal(project.edit.captions.enabled, true);
 });
 
+test("restoring a sentence preserves an unrelated final-sentence-first reorder", () => {
+  const project = sample();
+  applyTool(project, "reorder_sections", { moving_ordinal: "last", place: "start" });
+  applyTool(project, "propose_cut", { action: "remove", sentence_id: "s02" });
+  applyTool(project, "set_caption_style", { enabled: true, delta_font_scale: 0.2 });
+  const restored = applyTool(project, "restore_section", { sentence_ordinal: 2 });
+  assert.equal(restored.result.status, "applied");
+  const view = present(project);
+  assert.equal(view.cues[0].words[0].text, "Keep");
+  assert.equal(view.removedWordIds.includes("s02w0"), false);
+  assert.equal(project.edit.captions.fontScale, 1.2);
+});
+
 test("correcting the previous section keeps captions and an earlier cut", () => {
   const project = sample();
   applyTool(project, "set_caption_style", { enabled: true });

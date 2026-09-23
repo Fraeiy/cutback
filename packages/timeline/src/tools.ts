@@ -177,6 +177,7 @@ function applyCut(
   cut: { startMs: number; endMs: number; label: string; sentenceId: string | null; action: ResolvedRange["action"] },
 ): { ok: true; summary: string } | { ok: false; message: string } {
   const duration = project.media?.durationMs ?? 0;
+  const originalSpans = project.edit.spans;
   const removed = removeRange(project.edit.spans, cut.startMs, cut.endMs, duration);
   if (removed.removedMs < 40) {
     return { ok: false, message: "That section is already out of the edit." };
@@ -204,6 +205,18 @@ function applyCut(
       : cut.action === "trim_after"
         ? `The video now ends after “${cut.label}”. ${seconds}s after that is out.`
         : `Removed “${cut.label}” (${seconds}s).`;
+  const firstOverlapIndex = originalSpans.findIndex(
+    (span) => cut.endMs > span.sourceStartMs && cut.startMs < span.sourceEndMs,
+  );
+  const overlap = firstOverlapIndex >= 0 ? originalSpans[firstOverlapIndex] : null;
+  const restoreIndex = Math.max(
+    0,
+    Math.min(
+      removed.spans.length,
+      (firstOverlapIndex < 0 ? removed.spans.length : firstOverlapIndex) +
+        (overlap && cut.startMs > overlap.sourceStartMs + 1 ? 1 : 0),
+    ),
+  );
   record(project, {
     kind: "cut",
     summary,
@@ -211,6 +224,9 @@ function applyCut(
     startMs: cut.startMs,
     endMs: cut.endMs,
     action: cut.action,
+    restoreBeforeSpanId: removed.spans[restoreIndex - 1]?.id ?? null,
+    restoreAfterSpanId: removed.spans[restoreIndex]?.id ?? null,
+    restoreIndex,
   });
   return { ok: true, summary };
 }
@@ -987,8 +1003,28 @@ function restoreSection(project: Project, args: Record<string, unknown>, callId:
     return finish(project, callId, { status: "error", error: `“${found.range.label}” is already in the edit.` }, true);
   }
   const duration = project.media?.durationMs ?? 0;
+  const matchingCut = [...project.edit.history].reverse().find(
+    (entry) =>
+      entry.kind === "cut" &&
+      entry.action === "remove" &&
+      (found.range.sentenceId
+        ? entry.sentenceId === found.range.sentenceId
+        : entry.startMs === found.range.startMs && entry.endMs === found.range.endMs),
+  );
   commit(project);
-  project.edit.spans = insertRange(project.edit.spans, found.range.startMs, found.range.endMs, duration);
+  project.edit.spans = insertRange(
+    project.edit.spans,
+    found.range.startMs,
+    found.range.endMs,
+    duration,
+    matchingCut
+      ? {
+          beforeSpanId: matchingCut.restoreBeforeSpanId,
+          afterSpanId: matchingCut.restoreAfterSpanId,
+          index: matchingCut.restoreIndex,
+        }
+      : undefined,
+  );
   project.lastTarget = { ...found.range, action: "remove" };
   project.highlight = highlightFrom([{ startMs: found.range.startMs, endMs: found.range.endMs, label: found.range.label }], false);
   const summary = `Restored “${found.range.label}”. Other edits stayed.`;
@@ -1026,7 +1062,11 @@ function correctPrevious(project: Project, args: Record<string, unknown>, callId
     return finish(project, callId, { status: "error", error: offset < 0 ? "There is no previous section." : "There is no next section." }, true);
   }
   const duration = project.media?.durationMs ?? 0;
-  const restored = insertRange(project.edit.spans, last.startMs, last.endMs, duration);
+  const restored = insertRange(project.edit.spans, last.startMs, last.endMs, duration, {
+    beforeSpanId: last.restoreBeforeSpanId,
+    afterSpanId: last.restoreAfterSpanId,
+    index: last.restoreIndex,
+  });
   const removed = removeRange(restored, replacement.startMs, replacement.endMs, duration);
   if (removed.spans.length === 0) {
     return finish(project, callId, { status: "error", error: "That correction would remove the entire video." }, true);
