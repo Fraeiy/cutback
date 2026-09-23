@@ -8,6 +8,7 @@ import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
+import { waitUntil } from "@vercel/functions";
 import {
   MAX_DURATION_MS,
   MAX_UPLOAD_BYTES,
@@ -20,6 +21,14 @@ import {
   type Project,
 } from "../../../packages/timeline/src/index.js";
 import { renderExport } from "./exportJob.js";
+import {
+  materializeProjectFile,
+  projectBlobPath,
+  signedReadUrl,
+  signedUploadUrl,
+  uploadPrivateFile,
+  usesBlobStorage,
+} from "./cloud.js";
 import { ffmpegBin, ffprobeBin, probeMedia, runProcess } from "./ffmpeg.js";
 import {
   assertId,
@@ -34,8 +43,16 @@ import { fetchSentences, pollTranscript, submitTranscript, toTranscript, uploadM
 
 const srcDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(srcDir, "../../..");
-loadEnvFile(path.join(repoRoot, ".env"));
-if (!process.env.CUTBACK_DATA_DIR) process.env.CUTBACK_DATA_DIR = path.join(repoRoot, "data");
+if (process.env.VERCEL) {
+  // Never read the repo .env on Vercel: it gets bundled into the function and
+  // would point CUTBACK_DATA_DIR at the read-only task dir. Force /tmp instead.
+  process.env.CUTBACK_DATA_DIR = path.join(process.env.TMPDIR || "/tmp", "cutback");
+} else {
+  loadEnvFile(path.join(repoRoot, ".env"));
+  if (!process.env.CUTBACK_DATA_DIR) {
+    process.env.CUTBACK_DATA_DIR = path.join(repoRoot, "data");
+  }
+}
 
 const app = Fastify({
   logger: {
@@ -91,13 +108,14 @@ await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 }
 
 app.get("/api/health", async () => {
   const ffmpeg = await runProcess(ffmpegBin(), ["-version"]);
-  const ffprobe = await runProcess(ffprobeBin(), ["-version"]);
+  const ffprobe = process.env.VERCEL ? ffmpeg : await runProcess(ffprobeBin(), ["-version"]);
   return {
     ok: ffmpeg.code === 0 && ffprobe.code === 0,
     ffmpeg: ffmpeg.code === 0,
     ffprobe: ffprobe.code === 0,
     assemblyai: Boolean(apiKey()),
     accessTokenRequired: Boolean(process.env.CUTBACK_ACCESS_TOKEN),
+    cloudStorage: usesBlobStorage(),
     maxDurationMs: MAX_DURATION_MS,
     maxUploadBytes: MAX_UPLOAD_BYTES,
   };
@@ -118,12 +136,15 @@ app.post("/api/projects/demo", async (_request, reply) => {
   const project = await createEmptyProject("Demo");
   const dir = projectDir(project.id);
   await mkdir(dir, { recursive: true });
-  await copyFile(sample, path.join(dir, "original.mp4"));
-  const probed = await probeMedia(path.join(dir, "original.mp4"));
-  const bytes = (await stat(path.join(dir, "original.mp4"))).size;
+  const localSample = path.join(dir, "original.mp4");
+  await copyFile(sample, localSample);
+  const probed = await probeMedia(localSample);
+  const bytes = (await stat(localSample)).size;
+  const storedName = usesBlobStorage() ? projectBlobPath(project.id, "source/original.mp4") : "original.mp4";
+  if (usesBlobStorage()) await uploadPrivateFile(localSample, storedName, "video/mp4");
   attachMedia(project, {
     filename: "demo.mp4",
-    storedName: "original.mp4",
+    storedName,
     bytes,
     durationMs: probed.durationMs,
     width: probed.width,
@@ -148,7 +169,85 @@ app.get("/api/projects/:id", async (request, reply) => {
   }
 });
 
+app.post("/api/projects/:id/uploads", async (request, reply) => {
+  if (!usesBlobStorage()) return reply.code(404).send({ error: "Direct cloud uploads are not enabled." });
+  const id = assertId((request.params as { id: string }).id);
+  await loadProject(id);
+  const body = (request.body ?? {}) as { filename?: string; contentType?: string; bytes?: number; kind?: string };
+  const filename = path.basename(String(body.filename || ""));
+  const ext = path.extname(filename).toLowerCase();
+  const kind = body.kind === "music" ? "music" : "media";
+  const allowed = kind === "music" ? allowedAudioExt : allowedExt;
+  if (!allowed.has(ext)) {
+    return reply.code(400).send({ error: kind === "music" ? "Use MP3, WAV, M4A, AAC, OGG, or FLAC." : "Use an MP4, MOV, WEBM, or MKV up to two minutes." });
+  }
+  const bytes = Number(body.bytes || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0 || bytes > MAX_UPLOAD_BYTES) {
+    return reply.code(413).send({ error: "That file is over 200 MB." });
+  }
+  const contentType = String(body.contentType || (kind === "music" ? "audio/mpeg" : "video/mp4")).slice(0, 120);
+  if (!(kind === "music" ? contentType.startsWith("audio/") : contentType.startsWith("video/"))) {
+    return reply.code(400).send({ error: "The selected file type does not match its contents." });
+  }
+  const pathname = projectBlobPath(id, `${kind}/${crypto.randomUUID()}${ext}`);
+  const uploadUrl = await signedUploadUrl(pathname, contentType, MAX_UPLOAD_BYTES);
+  return { uploadUrl, pathname, filename, contentType, bytes, kind };
+});
+
+app.post("/api/projects/:id/uploads/attach", async (request, reply) => {
+  if (!usesBlobStorage()) return reply.code(404).send({ error: "Direct cloud uploads are not enabled." });
+  const id = assertId((request.params as { id: string }).id);
+  const body = (request.body ?? {}) as { pathname?: string; filename?: string; contentType?: string; bytes?: number; kind?: string };
+  const kind = body.kind === "music" ? "music" : "media";
+  const pathname = String(body.pathname || "");
+  const expectedPrefix = projectBlobPath(id, `${kind}/`);
+  if (!pathname.startsWith(expectedPrefix) || pathname.includes("..")) {
+    return reply.code(400).send({ error: "Invalid uploaded file path." });
+  }
+  return withProjectLock(id, async () => {
+    const project = await loadProject(id);
+    if (kind === "music") {
+      project.music = {
+        filename: path.basename(String(body.filename || "music")),
+        storedName: pathname,
+        bytes: Math.max(0, Number(body.bytes || 0)),
+        mime: String(body.contentType || "audio/mpeg"),
+      };
+      project.revision += 1;
+      project.updatedAt = new Date().toISOString();
+      await saveProject(project);
+      return sendProject(project);
+    }
+    const localFile = await materializeProjectFile(id, pathname);
+    const probed = await probeMedia(localFile);
+    if (probed.durationMs > MAX_DURATION_MS + 250) {
+      return reply.code(400).send({ error: "Cutback's hackathon build accepts videos up to 2 minutes." });
+    }
+    attachMedia(project, {
+      filename: path.basename(String(body.filename || "video")),
+      storedName: pathname,
+      bytes: Math.max(0, Number(body.bytes || 0)),
+      durationMs: probed.durationMs,
+      width: probed.width,
+      height: probed.height,
+      hasAudio: probed.hasAudio,
+      mime: String(body.contentType || "video/mp4"),
+    });
+    project.transcript = null;
+    project.transcriptSource = null;
+    project.jobs.transcription = {
+      status: "idle", error: null, progress: 0, updatedAt: new Date().toISOString(), transcriptId: null,
+    };
+    project.jobs.export = {
+      status: "idle", error: null, progress: 0, updatedAt: null, file: null, bytes: null, revision: null,
+    };
+    await saveProject(project);
+    return sendProject(project);
+  });
+});
+
 app.post("/api/projects/:id/media", async (request, reply) => {
+  if (usesBlobStorage()) return reply.code(413).send({ error: "Use the direct cloud upload flow for this deployment." });
   const id = assertId((request.params as { id: string }).id);
   const incoming = await request.file();
   if (!incoming) return reply.code(400).send({ error: "Choose a video file." });
@@ -215,6 +314,7 @@ app.post("/api/projects/:id/media", async (request, reply) => {
 });
 
 app.post("/api/projects/:id/music", async (request, reply) => {
+  if (usesBlobStorage()) return reply.code(413).send({ error: "Use the direct cloud upload flow for this deployment." });
   const id = assertId((request.params as { id: string }).id);
   const incoming = await request.file();
   if (!incoming) return reply.code(400).send({ error: "Choose an audio file." });
@@ -288,7 +388,9 @@ app.post("/api/projects/:id/transcribe", async (request, reply) => {
     return { ok: true };
   });
   if ("error" in started && started.error) return reply.code(started.code ?? 400).send({ error: started.error });
-  void runTranscription(id, key);
+  const work = runTranscription(id, key);
+  if (process.env.VERCEL) waitUntil(work);
+  else void work;
   const project = await loadProject(id);
   return sendProject(project);
 });
@@ -297,7 +399,7 @@ async function runTranscription(id: string, key: string): Promise<void> {
   try {
     const project = await loadProject(id);
     if (!project.media) throw new Error("Upload a video first.");
-    const filePath = path.join(projectDir(id), project.media.storedName);
+    const filePath = await materializeProjectFile(id, project.media.storedName);
     const uploadUrl = await uploadMedia(filePath, key);
     const transcriptId = await submitTranscript(uploadUrl, key);
     await withProjectLock(id, async () => {
@@ -388,6 +490,12 @@ app.post("/api/projects/:id/tools/:name", async (request, reply) => {
             project.jobs.export.updatedAt = new Date().toISOString();
             await saveProject(project);
           });
+          const exportStoredName = usesBlobStorage() ? projectBlobPath(project.id, "export/export.mp4") : "export.mp4";
+          const captionsStoredName = usesBlobStorage() ? projectBlobPath(project.id, "export/captions.srt") : "captions.srt";
+          if (usesBlobStorage()) {
+            await uploadPrivateFile(path.join(projectDir(project.id), "export.mp4"), exportStoredName, "video/mp4");
+            await uploadPrivateFile(path.join(projectDir(project.id), "captions.srt"), captionsStoredName, "application/x-subrip");
+          }
           const earlier = typeof outcome.result.summary === "string" ? outcome.result.summary : "";
           const result = {
             status: "completed",
@@ -402,7 +510,7 @@ app.post("/api/projects/:id/tools/:name", async (request, reply) => {
             error: null,
             progress: 1,
             updatedAt: new Date().toISOString(),
-            file: "export.mp4",
+            file: exportStoredName,
             bytes,
             revision: project.revision,
           };
@@ -456,6 +564,7 @@ app.get("/api/projects/:id/media", async (request, reply) => {
   const id = assertId((request.params as { id: string }).id);
   const project = await loadProject(id);
   if (!project.media) return reply.code(404).send({ error: "No video yet." });
+  if (usesBlobStorage()) return reply.redirect(await signedReadUrl(project.media.storedName));
   const filePath = path.join(projectDir(id), project.media.storedName);
   const info = await stat(filePath);
   const range = request.headers.range;
@@ -481,6 +590,7 @@ app.get("/api/projects/:id/music", async (request, reply) => {
   const id = assertId((request.params as { id: string }).id);
   const project = await loadProject(id);
   if (!project.music) return reply.code(404).send({ error: "No background music." });
+  if (usesBlobStorage()) return reply.redirect(await signedReadUrl(project.music.storedName));
   reply.header("Content-Type", project.music.mime || "audio/mpeg");
   reply.header("Cache-Control", "private, max-age=3600");
   return reply.send(createReadStream(path.join(projectDir(id), project.music.storedName)));
@@ -488,6 +598,13 @@ app.get("/api/projects/:id/music", async (request, reply) => {
 
 app.get("/api/projects/:id/export", async (request, reply) => {
   const id = assertId((request.params as { id: string }).id);
+  if (usesBlobStorage()) {
+    const project = await loadProject(id);
+    if (project.jobs.export.status !== "completed" || !project.jobs.export.file) {
+      return reply.code(404).send({ error: "Export the edit before downloading." });
+    }
+    return reply.redirect(await signedReadUrl(project.jobs.export.file, 15 * 60 * 1000));
+  }
   const filePath = path.join(projectDir(id), "export.mp4");
   if (!existsSync(filePath)) return reply.code(404).send({ error: "Export the edit before downloading." });
   const info = await stat(filePath);
@@ -499,6 +616,13 @@ app.get("/api/projects/:id/export", async (request, reply) => {
 
 app.get("/api/projects/:id/subtitles.srt", async (request, reply) => {
   const id = assertId((request.params as { id: string }).id);
+  if (usesBlobStorage()) {
+    const project = await loadProject(id);
+    if (project.jobs.export.status !== "completed") {
+      return reply.code(404).send({ error: "Export the project first to create edited-timeline subtitles." });
+    }
+    return reply.redirect(await signedReadUrl(projectBlobPath(id, "export/captions.srt"), 15 * 60 * 1000));
+  }
   const filePath = path.join(projectDir(id), "captions.srt");
   if (!existsSync(filePath)) return reply.code(404).send({ error: "Export the project first to create edited-timeline subtitles." });
   reply.header("Content-Type", "application/x-subrip; charset=utf-8");
@@ -547,7 +671,7 @@ app.post("/api/voice/token", async (_request, reply) => {
 });
 
 const webDist = path.join(repoRoot, "apps", "web", "dist");
-if (existsSync(path.join(webDist, "index.html"))) {
+if (!process.env.VERCEL && existsSync(path.join(webDist, "index.html"))) {
   await app.register(fastifyStatic, { root: webDist });
   app.setNotFoundHandler((request, reply) => {
     if (request.url.startsWith("/api")) return reply.code(404).send({ error: "Not found." });
@@ -555,6 +679,10 @@ if (existsSync(path.join(webDist, "index.html"))) {
   });
 }
 
-const port = Number(process.env.PORT || 8791);
-await app.listen({ port, host: "0.0.0.0" });
-app.log.info(`Cutback server listening on ${port}. Data directory ${dataRoot()}`);
+if (!process.env.VERCEL) {
+  const port = Number(process.env.PORT || 8791);
+  await app.listen({ port, host: "0.0.0.0" });
+  app.log.info(`Cutback server listening on ${port}. Data directory ${dataRoot()}`);
+}
+
+export default app;

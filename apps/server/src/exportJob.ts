@@ -7,6 +7,7 @@ import {
   present,
   type Project,
 } from "../../../packages/timeline/src/index.js";
+import { materializeProjectFile } from "./cloud.js";
 import { ffmpegBin, findFont, parseProgress, runProcess } from "./ffmpeg.js";
 import { projectDir } from "./store.js";
 
@@ -16,7 +17,7 @@ export async function renderExport(project: Project, onProgress: (progress: numb
   if (view.segments.length === 0) throw new Error("The timeline is empty.");
   const dir = projectDir(project.id);
   await mkdir(dir, { recursive: true });
-  const input = path.join(dir, project.media.storedName);
+  const input = await materializeProjectFile(project.id, project.media.storedName);
   const output = path.join(dir, "export.mp4");
   let subtitlePath: string | null = null;
   const font = findFont(project.edit.captions.fontFamily);
@@ -36,7 +37,7 @@ export async function renderExport(project: Project, onProgress: (progress: numb
     srtPath: subtitlePath,
     fontsDir: font?.directory ?? null,
     fontName: font?.family ?? null,
-    musicPath: project.music ? path.join(dir, project.music.storedName) : null,
+    musicPath: project.music ? await materializeProjectFile(project.id, project.music.storedName) : null,
     audio: project.edit.audio,
   });
   let buffer = "";

@@ -1,8 +1,14 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const require = createRequire(import.meta.url);
+const ffmpegStatic = require("ffmpeg-static") as string | null;
 
 export function ffmpegBin(): string {
-  return process.env.FFMPEG_PATH || "ffmpeg";
+  return process.env.FFMPEG_PATH || (process.env.VERCEL ? ffmpegStatic || "ffmpeg" : "ffmpeg");
 }
 
 export function ffprobeBin(): string {
@@ -44,6 +50,19 @@ export interface Probe {
 }
 
 export async function probeMedia(filePath: string): Promise<Probe> {
+  if (process.env.VERCEL) {
+    const result = await runProcess(ffmpegBin(), ["-hide_banner", "-i", filePath]);
+    const duration = /Duration:\s*(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)/.exec(result.stderr);
+    const video = /Video:[^\r\n]*?\b(\d{2,5})x(\d{2,5})\b/.exec(result.stderr);
+    if (!duration || !video) throw new Error("Could not read the video duration and dimensions.");
+    const durationSec = Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3]);
+    return {
+      durationMs: Math.round(durationSec * 1000),
+      width: Number(video[1]),
+      height: Number(video[2]),
+      hasAudio: /Audio:[^\r\n]+/.test(result.stderr),
+    };
+  }
   const result = await runProcess(ffprobeBin(), [
     "-v",
     "error",
@@ -85,7 +104,14 @@ export interface FontChoice {
   directory: string;
 }
 
+// Bundled with the deployment so captioned exports render on hosts without
+// system fonts (Vercel functions ship none). The `new URL(..., import.meta.url)`
+// form lets @vercel/nft trace it, and vercel.json's includeFiles adds it too.
+const bundledSans = fileURLToPath(new URL("../../../../assets/fonts/DejaVuSans.ttf", import.meta.url));
+
 const FONT_CANDIDATES: Array<{ file: string; family: string }> = [
+  { file: bundledSans, family: "DejaVu Sans" },
+  { file: path.join(process.cwd(), "assets", "fonts", "DejaVuSans.ttf"), family: "DejaVu Sans" },
   { file: "C:/Windows/Fonts/arial.ttf", family: "Arial" },
   { file: "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", family: "Liberation Sans" },
   { file: "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", family: "DejaVu Sans" },

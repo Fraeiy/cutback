@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createProject, defaultEdit, type Project } from "../../../packages/timeline/src/index.js";
+import { projectBlobPath, readPrivateText, usesBlobStorage, writePrivateText } from "./cloud.js";
 
 const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -33,8 +34,11 @@ export function withProjectLock<T>(id: string, task: () => Promise<T>): Promise<
 }
 
 export async function loadProject(id: string): Promise<Project> {
-  const file = path.join(projectDir(id), "project.json");
-  const raw = await readFile(file, "utf8");
+  const safeId = assertId(id);
+  const raw = usesBlobStorage()
+    ? await readPrivateText(projectBlobPath(safeId, "project.json"))
+    : await readFile(path.join(projectDir(safeId), "project.json"), "utf8");
+  if (raw === null) throw new Error("Project not found.");
   const project = JSON.parse(raw) as Project;
   if (project.version !== 1) throw new Error(`Unsupported project version ${String(project.version)}.`);
   const defaults = defaultEdit(project.media?.durationMs ?? 0);
@@ -55,6 +59,10 @@ export async function loadProject(id: string): Promise<Project> {
 }
 
 export async function saveProject(project: Project): Promise<void> {
+  if (usesBlobStorage()) {
+    await writePrivateText(projectBlobPath(project.id, "project.json"), JSON.stringify(project));
+    return;
+  }
   const dir = projectDir(project.id);
   await mkdir(dir, { recursive: true });
   const file = path.join(dir, "project.json");

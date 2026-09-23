@@ -10,3 +10,6 @@ apps/web/dist/
 coverage/
 tmp/
 samples/.build/
+
+.vercel
+.env*
