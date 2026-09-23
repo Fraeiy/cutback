@@ -72,13 +72,13 @@ The agent should only say a change is done after the tool result says `applied`,
 - Real transcription and the live voice session need `ASSEMBLYAI_API_KEY`. The demo fixture is not a simulated voice call, and the MP4 export is a real FFmpeg render.
 - Projects live on local disk in one long-running process. Refresh restores segment order, edit history, captions, framing, audio settings, and pending cut proposals.
 - Retrying transcription replaces the transcript and resets the edit, because word ids are rebuilt.
-- Caption burn-in needs Arial, Liberation Sans, or DejaVu Sans on the machine. The preview and export use the same caption settings and edited timeline.
+- Caption burn-in needs Arial, Liberation Sans, or DejaVu Sans. DejaVu Sans is bundled in `assets/fonts`, so exports with captions work on hosts without system fonts. The preview and export use the same caption settings and edited timeline.
 - Cutback supports reordered source segments, but it does not invent missing speech or perform automatic subject tracking.
 - The editor has responsive phone controls and safe-area handling. It does not include accounts.
 
 ## Deployment
 
-The included Docker setup is the production path for the complete editor because uploads, project JSON, and rendered files require durable storage while FFmpeg runs in a long-lived Node process. A static Vercel deployment can host the Vite interface, but it cannot provide working upload, transcription, or export by itself. Moving the complete app to Vercel requires an external durable media store and a rendering worker; do not point the interface at an ephemeral Function and treat it as a complete deployment.
+The complete editor deploys to Vercel as a single Function (`vercel deploy --prod`, remote build). Projects, uploaded media, and rendered exports live in Vercel Blob storage, FFmpeg comes from `ffmpeg-static` (its Linux binary is fetched by the remote build), exports run inside the Function under a 300 second limit, and the DejaVu Sans font in `assets/fonts` is bundled so caption burn-in works without system fonts. Required environment variables: `ASSEMBLYAI_API_KEY`, `BLOB_READ_WRITE_TOKEN`. The Function's `/tmp` is ephemeral, so durable state always comes from Blob storage. The included Docker setup remains the option for local or long-lived hosting with disk storage.
 
 ## Layout
 
