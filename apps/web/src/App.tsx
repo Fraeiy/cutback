@@ -185,7 +185,7 @@ export function EditorHeader({
           <i />
           Saved
         </span>
-        <span className="demo-badge">Demo project</span>
+        
       </div>
       <div className="mobile-only mobile-head">
         <button
@@ -654,7 +654,7 @@ export function CaptionInspector({
     <section className="inspector settings-panel">
       <div className="inspector-header">
         <h2>Captions</h2>
-        <span className="demo-badge">Live preview</span>
+        <span>Preview</span>
       </div>
       <fieldset>
         <legend>Caption style</legend>
@@ -787,7 +787,7 @@ export function AudioInspector({
           </span>
           <div>
             <b>Soft Focus</b>
-            <span>Demo music · 00:48</span>
+            <span>Background music · 00:48</span>
           </div>
           <button
             className="icon-btn"
@@ -852,7 +852,7 @@ function MediaPanel({
           <p>
             {phase === "empty"
               ? "Choose a video file to begin editing."
-              : "Demo processing state"}
+              : "Preparing transcript"}
           </p>
         </div>
       )}
@@ -1132,8 +1132,8 @@ export function VoiceDock({
   }
   const instruction = isError
     ? state === "Permission error"
-      ? "Demo microphone access was declined."
-      : "Demo voice service could not connect."
+      ? "Microphone access was declined."
+      : "Voice service could not connect."
     : active
       ? "Keep the example, shorten the intro."
       : "Tap to simulate voice editing"
@@ -1143,7 +1143,7 @@ export function VoiceDock({
     >
       {expanded && (
         <div className="voice-history">
-          <b>Recent demo conversation</b>
+          <b>Recent conversation</b>
           <p><span>You</span> Keep the example, shorten the intro.</p>
           <p><span>Cutback</span> I prepared a 4.2 second trim for review.</p>
         </div>
@@ -1151,7 +1151,7 @@ export function VoiceDock({
       <button
         className="mic-button"
         onClick={toggle}
-        aria-label={active ? "Disconnect demo voice" : "Connect demo voice"}
+        aria-label={active ? "Disconnect voice" : "Connect voice"}
       >
         <Icon name="mic" size={28} />
       </button>
@@ -1171,7 +1171,7 @@ export function VoiceDock({
             : state === "Disconnected"
             ? "Tell Cutback what to change"
             : `${state}…`}{" "}
-          <span>Demo</span>
+          <span>Voice</span>
         </b>
         <p>{instruction}</p>
       </button>
@@ -1222,7 +1222,7 @@ export function ExportDialog({
               <Icon name="upload" />
             </span>
             <h2 id="export-title">Export your video</h2>
-            <p>This demo simulates rendering and does not create an MP4.</p>
+            <p>Export your edited video as an MP4.</p>
             <label>
               Format
               <select>
@@ -1238,15 +1238,15 @@ export function ExportDialog({
               </select>
             </label>
             <button className="primary full" onClick={begin}>
-              Start demo export
+              Export MP4
             </button>
           </>
         )}
         {state === "processing" && (
           <div className="center-state">
             <span className="spinner" />
-            <h2 id="export-title">Preparing preview</h2>
-            <p>Simulating captions and edits…</p>
+            <h2 id="export-title">Rendering your video</h2>
+            <p>Applying captions and edits…</p>
             <div className="progress">
               <i />
             </div>
@@ -1260,7 +1260,7 @@ export function ExportDialog({
             <span className="modal-icon success">
               <Icon name="check" />
             </span>
-            <h2 id="export-title">Demo export complete</h2>
+            <h2 id="export-title">Export complete</h2>
             <p>
               No file was produced. Connect the real renderer through the typed
               onExport callback.
@@ -1276,9 +1276,9 @@ export function ExportDialog({
               <Icon name="alert" />
             </span>
             <h2 id="export-title">Export could not finish</h2>
-            <p>This is a demo error state. Your edits are safe.</p>
+            <p>Export failed. Your edits are safe.</p>
             <button className="primary full" onClick={begin}>
-              Retry demo export
+              Retry export
             </button>
           </div>
         )}
