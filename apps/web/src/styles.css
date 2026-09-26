@@ -300,9 +300,11 @@ h2 { font-size: 16px; margin: 0; letter-spacing: -.2px; }
   .proposal { grid-template-columns: 38px 1fr; margin-top: 8px; padding: 9px; }
   .proposal-actions { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; }
   .proposal-actions button { min-height: 42px; }
-  .voice-dock { position: absolute; z-index: 15; left: 0; right: 0; bottom: 0; height: calc(104px + env(safe-area-inset-bottom)); margin: 0; border-radius: 14px 14px 0 0; grid-template-columns: 64px 42px 1fr 42px; gap: 8px; padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); background: rgba(24,28,31,.98); box-shadow: 0 -10px 40px rgba(0,0,0,.38); }
-  .mic-button { width: 62px; height: 62px; }
-  .voice-wave { width: 42px; gap: 2px; padding: 0; border: 0; }
+  .voice-dock { position: absolute; z-index: 15; left: 0; right: 0; bottom: 0; height: calc(72px + env(safe-area-inset-bottom)); margin: 0; border-radius: 12px 12px 0 0; grid-template-columns: 48px 34px 1fr 38px; gap: 7px; padding: 7px 12px calc(7px + env(safe-area-inset-bottom)); background: rgba(24,28,31,.98); box-shadow: 0 -8px 28px rgba(0,0,0,.38); }
+  .voice-dock.voice-open { height: calc(104px + env(safe-area-inset-bottom)); }
+  .voice-dock:not(.voice-open) .voice-copy p { display: none; }
+  .mic-button { width: 46px; height: 46px; }
+  .voice-wave { width: 34px; gap: 2px; padding: 0; border: 0; }
   .voice-wave i { width: 2px; }
   .voice-copy b { font-size: 11px; display: block; }
   .voice-copy b span { margin-left: 5px; }
@@ -327,9 +329,10 @@ h2 { font-size: 16px; margin: 0; letter-spacing: -.2px; }
   .video-stage { height: 150px; }
   .playback { height: 44px; }
   .mobile-tabs { height: 40px; }
-  .voice-dock { height: calc(88px + env(safe-area-inset-bottom)); }
-  .mic-button { width: 54px; height: 54px; }
-  .mobile-tool-panel { padding-bottom: 100px; }
+  .voice-dock { height: calc(64px + env(safe-area-inset-bottom)); }
+  .voice-dock.voice-open { height: calc(88px + env(safe-area-inset-bottom)); }
+  .mic-button { width: 42px; height: 42px; }
+  .mobile-tool-panel { padding-bottom: 78px; }
 }
 
 @media (max-width: 700px) and (orientation: landscape) {
