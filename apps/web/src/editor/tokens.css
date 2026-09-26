@@ -1,0 +1,17 @@
+:root {
+  color-scheme: dark;
+  --bg: #111315;
+  --panel: #171a1d;
+  --panel-2: #1b1e21;
+  --panel-3: #202428;
+  --border: #2b3033;
+  --text: #f3f4f2;
+  --muted: #9aa1a6;
+  --dim: #6f767b;
+  --mint: #a7f3c2;
+  --mint-strong: #7ee8a8;
+  --mint-soft: rgba(167, 243, 194, .12);
+  --orange: #d78a5c;
+  --danger: #ff746d;
+  --radius: 10px;
+}

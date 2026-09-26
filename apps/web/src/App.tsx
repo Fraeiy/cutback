@@ -1,80 +1,82 @@
+import { useEffect, useMemo, useRef, useState } from "react"
+import { demoServices } from "./editor/demoServices"
 import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type MouseEvent,
-} from "react";
-import {
-  present,
-  type PlaybackContext,
-  type PresentedProject,
-  type Word,
-} from "@cutback/timeline";
-import { api, type Health } from "./api";
-import { VoiceSession, type VoicePhase } from "./voice";
-import type { ReactNode } from "react";
+  PROJECT_DURATION as duration,
+  PROJECT_MEDIA as mediaImage,
+  SAMPLE_TRANSCRIPT as sentences,
+  TOOL_LABELS as toolLabels,
+} from "./editor/fixtures"
+import type {
+  CaptionStyle,
+  EditorCallbacks,
+  ExportState,
+  ProjectPhase,
+  Tool,
+  VoiceState,
+} from "./editor/types"
 
-const PROJECT_KEY = "cutback.projectId";
-
-type EditorTool = "Media" | "Transcript" | "Captions" | "Audio" | "History";
-type IconName =
-  | EditorTool
-  | "play"
-  | "pause"
-  | "undo"
-  | "redo"
-  | "mic"
-  | "stop"
-  | "more"
-  | "back"
-  | "fullscreen"
-  | "download";
-
-function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
-  const paths: Record<IconName, ReactNode> = {
-    Media: (
-      <>
-        <path d="M3 7h18v13H3z" />
-        <path d="m3 12 4-4 4 4 3-3 7 7" />
-      </>
-    ),
-    Transcript: (
-      <>
-        <path d="M6 3h9l4 4v14H6z" />
-        <path d="M9 12h7M9 16h7M15 3v5h5" />
-      </>
-    ),
-    Captions: (
-      <>
-        <rect x="3" y="5" width="18" height="14" rx="2" />
-        <path d="M10 10a2 2 0 1 0 0 4M18 10a2 2 0 1 0 0 4" />
-      </>
-    ),
-    Audio: <path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" />,
-    History: (
-      <>
-        <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
-        <path d="M3 3v5h5M12 7v6l4 2" />
-      </>
-    ),
-    play: <path d="m8 5 11 7-11 7z" />,
+function Icon({ name, size = 20 }: { name: string; size?: number }) {
+  const paths: Record<string, React.ReactNode> = {
+    play: <path d="m8 5 10 7-10 7V5Z" />,
     pause: (
       <>
-        <path d="M9 5v14M15 5v14" />
+        <path d="M8 5v14M16 5v14" />
+      </>
+    ),
+    volume: (
+      <>
+        <path d="M5 10v4h4l5 4V6l-5 4H5Z" />
+        <path d="M17 9a4 4 0 0 1 0 6" />
+      </>
+    ),
+    expand: (
+      <>
+        <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
+      </>
+    ),
+    folder: <path d="M3 7h7l2-2h9v14H3V7Z" />,
+    document: (
+      <>
+        <path d="M6 3h9l4 4v14H6V3Z" />
+        <path d="M14 3v5h5M9 12h6M9 16h6" />
+      </>
+    ),
+    captions: (
+      <>
+        <rect x="3" y="5" width="18" height="14" rx="2" />
+        <path d="M10 10a3 3 0 1 0 0 4M18 10a3 3 0 1 0 0 4" />
+      </>
+    ),
+    wave: <path d="M4 12v2m4-7v10m4-14v18m4-14v10m4-7v4" />,
+    history: (
+      <>
+        <path d="M4 7v5h5" />
+        <path d="M5.5 17a8 8 0 1 0-.8-9" />
       </>
     ),
     undo: (
       <>
         <path d="m9 7-5 5 5 5" />
-        <path d="M4 12h10a6 6 0 0 1 6 6" />
+        <path d="M5 12h8a6 6 0 0 1 6 6" />
       </>
     ),
     redo: (
       <>
         <path d="m15 7 5 5-5 5" />
-        <path d="M20 12H10a6 6 0 0 0-6 6" />
+        <path d="M19 12h-8a6 6 0 0 0-6 6" />
+      </>
+    ),
+    search: (
+      <>
+        <circle cx="11" cy="11" r="6" />
+        <path d="m16 16 5 5" />
+      </>
+    ),
+    scissors: (
+      <>
+        <circle cx="6" cy="7" r="2" />
+        <circle cx="6" cy="17" r="2" />
+        <path d="m8 8 11 8M8 16 19 8" />
       </>
     ),
     mic: (
@@ -83,1703 +85,1574 @@ function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
         <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
       </>
     ),
-    stop: <rect x="7" y="7" width="10" height="10" rx="1" />,
+    upload: (
+      <>
+        <path d="m12 16V4m-5 5 5-5 5 5" />
+        <path d="M4 15v5h16v-5" />
+      </>
+    ),
     more: (
       <>
-        <circle cx="12" cy="5" r="1" />
-        <circle cx="12" cy="12" r="1" />
-        <circle cx="12" cy="19" r="1" />
+        <circle cx="5" cy="12" r="1" fill="currentColor" />
+        <circle cx="12" cy="12" r="1" fill="currentColor" />
+        <circle cx="19" cy="12" r="1" fill="currentColor" />
       </>
     ),
+    close: <path d="m6 6 12 12M18 6 6 18" />,
     back: <path d="m15 18-6-6 6-6" />,
-    fullscreen: (
+    crop: (
       <>
-        <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
+        <path d="M7 3v14a2 2 0 0 0 2 2h12M3 7h14a2 2 0 0 1 2 2v12" />
       </>
     ),
-    download: (
+    music: (
       <>
-        <path d="M12 3v12m-5-5 5 5 5-5" />
-        <path d="M5 21h14" />
+        <path d="M9 18V6l10-2v12" />
+        <circle cx="6" cy="18" r="3" />
+        <circle cx="16" cy="16" r="3" />
       </>
     ),
-  };
+    check: <path d="m5 12 4 4L19 6" />,
+    alert: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 7v6M12 17h.01" />
+      </>
+    ),
+  }
   return (
     <svg
+      aria-hidden="true"
+      className="icon"
       width={size}
       height={size}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.7"
+      strokeWidth="1.8"
       strokeLinecap="round"
       strokeLinejoin="round"
-      aria-hidden="true"
     >
-      {paths[name]}
+      {paths[name] || paths.more}
     </svg>
-  );
+  )
 }
 
-const editorTools: Array<{ id: EditorTool; label: string }> = [
-  { id: "Media", label: "Media" },
-  { id: "Transcript", label: "Transcript" },
-  { id: "Captions", label: "Captions" },
-  { id: "Audio", label: "Audio" },
-  { id: "History", label: "History" },
-];
-
-function formatTime(ms: number): string {
-  const clamped = Math.max(0, ms);
-  const minutes = Math.floor(clamped / 60000);
-  const seconds = Math.floor((clamped % 60000) / 1000);
-  const frames = Math.floor((clamped % 1000) / 100);
-  return `${minutes}:${String(seconds).padStart(2, "0")}.${frames}`;
+function formatTime(value: number) {
+  return `00:${Math.round(value).toString().padStart(2, "0")}`
 }
 
-function phaseLabel(phase: VoicePhase): string {
-  switch (phase) {
-    case "connecting":
-      return "Connecting";
-    case "listening":
-      return "Listening";
-    case "user":
-      return "Hearing you";
-    case "thinking":
-      return "Thinking";
-    case "editing":
-      return "Editing";
-    case "speaking":
-      return "Speaking";
-    case "error":
-      return "Voice error";
-    default:
-      return "Mic off";
-  }
-}
-
-export function App() {
-  const [health, setHealth] = useState<Health | null>(null);
-  const [access, setAccess] = useState(
-    sessionStorage.getItem("cutback.access") ?? "",
-  );
-  const [unlocked, setUnlocked] = useState(false);
-  const [project, setProject] = useState<PresentedProject | null>(null);
-  const [selected, setSelected] = useState<string[]>([]);
-  const [clock, setClock] = useState({ sourceMs: 0, outputMs: 0 });
-  const [notice, setNotice] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [voicePhase, setVoicePhase] = useState<VoicePhase>("off");
-  const [voiceDetail, setVoiceDetail] = useState<string | null>(null);
-  const [line, setLine] = useState<{
-    who: "user" | "agent";
-    text: string;
-  } | null>(null);
-  const [level, setLevel] = useState(0);
-  const [ptt, setPtt] = useState(false);
-  const [playing, setPlaying] = useState(false);
-  const [compareOriginal, setCompareOriginal] = useState(false);
-  const [activeTool, setActiveTool] = useState<EditorTool>("Transcript");
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [exportOpen, setExportOpen] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const musicRef = useRef<HTMLAudioElement>(null);
-  const audioRef = useRef<AudioContext | null>(null);
-  const voiceRef = useRef<VoiceSession | null>(null);
-  const projectRef = useRef<PresentedProject | null>(null);
-  const selectedRef = useRef<string[]>([]);
-  const clockRef = useRef(clock);
-  const wasPlaying = useRef(false);
-  const compareRef = useRef(false);
-  projectRef.current = project;
-  selectedRef.current = selected;
-  clockRef.current = clock;
-  compareRef.current = compareOriginal;
-
-  useEffect(() => {
-    void api
-      .health()
-      .then(setHealth)
-      .catch(() => setNotice("The editing server is not running."));
-  }, []);
-
-  useEffect(() => {
-    if (!health) return;
-    if (!health.accessTokenRequired) {
-      setUnlocked(true);
-      return;
-    }
-    if (access) setUnlocked(true);
-  }, [health, access]);
-
-  useEffect(() => {
-    if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(null), 6000);
-    return () => window.clearTimeout(timer);
-  }, [notice]);
-
-  useEffect(() => {
-    if (!unlocked) return;
-    const existing = localStorage.getItem(PROJECT_KEY);
-    if (!existing) return;
-    void api
-      .get(existing)
-      .then(setProject)
-      .catch(() => localStorage.removeItem(PROJECT_KEY));
-  }, [unlocked]);
-
-  useEffect(() => {
-    if (!project) return;
-    const running =
-      project.jobs.transcription.status === "running" ||
-      project.jobs.export.status === "running";
-    if (!running) return;
-    const timer = window.setInterval(() => {
-      void api
-        .get(project.id)
-        .then(setProject)
-        .catch(() => undefined);
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [
-    project?.id,
-    project?.jobs.transcription.status,
-    project?.jobs.export.status,
-  ]);
-
-  const remember = (next: PresentedProject) => {
-    localStorage.setItem(PROJECT_KEY, next.id);
-    setProject(next);
-    voiceRef.current?.refreshPrompt(next);
-  };
-
-  const ensureAudio = () => {
-    if (!audioRef.current) audioRef.current = new AudioContext();
-    const audio = audioRef.current;
-    void audio.resume();
-    return audio;
-  };
-
-  const setDuck = (value: number) => {
-    if (videoRef.current)
-      videoRef.current.volume = Math.max(0, Math.min(1, value));
-  };
-
-  const snapshot = useCallback(() => {
-    const video = videoRef.current;
-    return {
-      sourceTimeMs: video
-        ? video.currentTime * 1000
-        : clockRef.current.sourceMs,
-      outputTimeMs: clockRef.current.outputMs,
-      selectedWordIds: selectedRef.current,
-    };
-  }, []);
-
-  const postContext = useCallback(
-    async (reason: PlaybackContext["reason"]) => {
-      const current = projectRef.current;
-      if (!current) return;
-      await api.playback(current.id, {
-        ...snapshot(),
-        capturedAt: new Date().toISOString(),
-        reason,
-      });
-    },
-    [snapshot],
-  );
-
-  const runTool = async (name: string, args: Record<string, unknown>) => {
-    const current = projectRef.current;
-    if (!current) return;
-    setBusy(name);
-    setNotice(null);
-    try {
-      if (
-        name !== "undo_edit" &&
-        name !== "redo_edit" &&
-        name !== "read_project_context"
-      ) {
-        await postContext("selection");
-      }
-      const response = await api.tool(
-        current.id,
-        name,
-        args,
-        crypto.randomUUID(),
-      );
-      remember(response.project);
-      if (typeof response.result.seek_output_ms === "number")
-        seekOutput(response.result.seek_output_ms, response.project);
-      if (response.isError)
-        setNotice(
-          String(
-            response.result.error ||
-              response.result.message ||
-              "That edit did not apply.",
-          ),
-        );
-      else if (typeof response.result.summary === "string")
-        setNotice(response.result.summary);
-      else if (response.result.status === "needs_clarification")
-        setNotice(String(response.result.message));
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "The edit failed.");
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const seekOutput = (outputMs: number, source = projectRef.current) => {
-    const video = videoRef.current;
-    if (!video || !source) return;
-    const segments = compareRef.current
-      ? source.originalSegments
-      : source.segments;
-    const segment =
-      segments.find(
-        (item) =>
-          outputMs >= item.outputStartMs && outputMs <= item.outputEndMs,
-      ) ?? segments[0];
-    if (!segment) return;
-    video.currentTime =
-      (segment.sourceStartMs + (outputMs - segment.outputStartMs)) / 1000;
-  };
-
-  useEffect(() => {
-    let frame = 0;
-    const tick = () => {
-      const video = videoRef.current;
-      const current = projectRef.current;
-      if (video && current?.segments.length) {
-        let sourceMs = video.currentTime * 1000;
-        const segments = compareRef.current
-          ? current.originalSegments
-          : current.segments;
-        const index = segments.findIndex(
-          (segment) =>
-            sourceMs >= segment.sourceStartMs && sourceMs < segment.sourceEndMs,
-        );
-        if (index === -1) {
-          const next = segments.find(
-            (segment) => segment.sourceEndMs > sourceMs + 30,
-          );
-          const target = next ?? segments[segments.length - 1];
-          const desired = next
-            ? target.sourceStartMs
-            : Math.max(target.sourceStartMs, target.sourceEndMs - 40);
-          if (Math.abs(sourceMs - desired) > 60) {
-            video.currentTime = desired / 1000;
-            sourceMs = desired;
-          }
-        } else if (
-          !video.paused &&
-          sourceMs >= segments[index].sourceEndMs - 25
-        ) {
-          const next = segments[index + 1];
-          if (next) video.currentTime = next.sourceStartMs / 1000;
-          else video.pause();
-        }
-        const segment =
-          segments.find(
-            (item) =>
-              sourceMs >= item.sourceStartMs && sourceMs <= item.sourceEndMs,
-          ) ?? segments[0];
-        const outputMs =
-          segment.outputStartMs + Math.max(0, sourceMs - segment.sourceStartMs);
-        setClock({ sourceMs, outputMs });
-        setPlaying(!video.paused);
-        const music = musicRef.current;
-        if (music && current.music && !compareRef.current) {
-          const speechActive =
-            current.transcript?.words.some(
-              (word) => sourceMs >= word.startMs && sourceMs <= word.endMs,
-            ) ?? false;
-          const targetVolume = Math.max(
-            0,
-            Math.min(
-              1,
-              current.edit.audio.musicVolume *
-                (current.edit.audio.duckMusic && speechActive ? 0.42 : 1),
-            ),
-          );
-          const smoothing = Math.min(
-            1,
-            16 / Math.max(50, current.edit.audio.fadeMs),
-          );
-          music.volume += (targetVolume - music.volume) * smoothing;
-          const target = outputMs / 1000;
-          if (Math.abs(music.currentTime - target) > 0.3)
-            music.currentTime =
-              target % Math.max(1, music.duration || target + 1);
-          if (!video.paused && music.paused)
-            void music.play().catch(() => undefined);
-          if (video.paused && !music.paused) music.pause();
-        }
-      }
-      frame = requestAnimationFrame(tick);
-    };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, []);
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (
-        target &&
-        (target.tagName === "INPUT" || target.tagName === "TEXTAREA")
-      )
-        return;
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
-        event.preventDefault();
-        void runTool(event.shiftKey ? "redo_edit" : "undo_edit", {});
-      } else if (event.key === "Delete" || event.key === "Backspace") {
-        if (selectedRef.current.length) {
-          event.preventDefault();
-          void runTool("propose_cut", { action: "remove", use: "selection" });
-        }
-      } else if (event.key === " " && !ptt) {
-        event.preventDefault();
-        togglePlay();
-      } else if (
-        (event.key === "v" || event.key === "V") &&
-        ptt &&
-        voiceRef.current
-      ) {
-        if (event.type === "keydown" && !event.repeat)
-          voiceRef.current.setHeld(true);
-      }
-    };
-    const up = (event: KeyboardEvent) => {
-      if ((event.key === "v" || event.key === "V") && ptt)
-        voiceRef.current?.setHeld(false);
-    };
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("keyup", up);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("keyup", up);
-    };
-  }, [ptt, project?.id]);
-
-  const togglePlay = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    ensureAudio();
-    if (video.paused) void video.play();
-    else video.pause();
-  };
-
-  const onUpload = async (file: File, fresh = false) => {
-    voiceRef.current?.end();
-    voiceRef.current = null;
-    setVoicePhase("off");
-    setLine(null);
-    setBusy("upload");
-    setNotice(null);
-    try {
-      const created =
-        !fresh && project
-          ? project
-          : await api.create(file.name.replace(/\.[^.]+$/, ""));
-      const next = await api.upload(created.id, file);
-      remember(next);
-      setSelected([]);
-      if (health?.assemblyai) {
-        const transcribing = await api.transcribe(next.id);
-        remember(transcribing);
-      } else {
-        setNotice(
-          "Video is in. Add ASSEMBLYAI_API_KEY on the server, then transcribe it.",
-        );
-      }
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Upload failed.");
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const loadDemo = async () => {
-    setBusy("demo");
-    setNotice(null);
-    try {
-      const next = await api.demo();
-      remember(next);
-      setSelected([]);
-      setNotice(
-        "Demo loaded. The transcript is a measured fixture until you transcribe it with AssemblyAI.",
-      );
-    } catch (error) {
-      setNotice(
-        error instanceof Error ? error.message : "Demo failed to load.",
-      );
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const startVoice = async () => {
-    if (!projectRef.current) return;
-    if (!health?.assemblyai) {
-      setNotice(
-        "Add ASSEMBLYAI_API_KEY on the server before starting the voice agent.",
-      );
-      return;
-    }
-    const audio = ensureAudio();
-    voiceRef.current?.end();
-    const session = new VoiceSession(
-      projectRef.current.id,
-      {
-        onPhase: (phase, detail) => {
-          setVoicePhase(phase);
-          setVoiceDetail(detail ?? null);
-        },
-        onLine: (who, text) => setLine({ who, text }),
-        onLevel: setLevel,
-        onProject: (next) => {
-          setProject(next);
-          projectRef.current = next;
-        },
-        onSeek: (outputMs) => seekOutput(outputMs),
-        snapshot,
-        onUserSpeech: (active) => {
-          const video = videoRef.current;
-          if (!video) return;
-          if (active) {
-            wasPlaying.current = !video.paused;
-            video.pause();
-          } else if (wasPlaying.current) {
-            void video.play().catch(() => undefined);
-          }
-        },
-      },
-      audio,
-    );
-    voiceRef.current = session;
-    setDuck(ptt ? 1 : 0.22);
-    try {
-      await session.start(projectRef.current);
-    } catch (error) {
-      setVoicePhase("error");
-      setVoiceDetail(
-        error instanceof Error
-          ? error.message
-          : "Microphone or voice token failed.",
-      );
-    }
-  };
-
-  const stopVoice = () => {
-    voiceRef.current?.end();
-    voiceRef.current = null;
-    setDuck(1);
-    setVoicePhase("off");
-  };
-
-  useEffect(() => {
-    const end = () => {
-      if (voiceRef.current) voiceRef.current.end();
-    };
-    window.addEventListener("pagehide", end);
-    return () => window.removeEventListener("pagehide", end);
-  }, []);
-
-  useEffect(() => {
-    if (voicePhase === "off") setDuck(1);
-    else setDuck(ptt ? 1 : 0.22);
-  }, [ptt, voicePhase]);
-
-  const activeCue = useMemo(() => {
-    if (!project?.edit.captions.enabled || compareOriginal) return null;
-    return (
-      project.cues.find(
-        (cue) =>
-          clock.outputMs >= cue.outputStartMs &&
-          clock.outputMs <= cue.outputEndMs,
-      ) ?? null
-    );
-  }, [
-    project?.cues,
-    project?.edit.captions.enabled,
-    clock.outputMs,
-    compareOriginal,
-  ]);
-
-  const onWordClick = (word: Word, event: MouseEvent) => {
-    const words = project?.transcript?.words ?? [];
-    if (event.shiftKey && selected.length) {
-      const ids = words.map((item) => item.id);
-      const start = ids.indexOf(selected[0]);
-      const end = ids.indexOf(word.id);
-      const [from, to] = start < end ? [start, end] : [end, start];
-      setSelected(ids.slice(from, to + 1));
-    } else {
-      setSelected([word.id]);
-    }
-    const video = videoRef.current;
-    if (video && project && !project.removedWordIds.includes(word.id)) {
-      ensureAudio();
-      video.currentTime = word.startMs / 1000;
-    }
-  };
-
-  if (!health) {
-    return (
-      <main className="gate">
-        <p className="mark">Cutback</p>
-        <p>{notice || "Connecting to the editor."}</p>
-      </main>
-    );
-  }
-
-  if (!unlocked) {
-    return (
-      <main className="gate">
-        <p className="mark">Cutback</p>
-        <p>
-          This server asks for an access token before it will spend the
-          AssemblyAI key.
-        </p>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            sessionStorage.setItem("cutback.access", access);
-            setUnlocked(true);
-          }}
-        >
-          <input
-            value={access}
-            onChange={(event) => setAccess(event.target.value)}
-            placeholder="Access token"
-            autoFocus
-          />
-          <button type="submit">Continue</button>
-        </form>
-      </main>
-    );
-  }
-
-  const exportReady =
-    project?.jobs.export.status === "completed" &&
-    project.jobs.export.revision === project.revision;
-  const framing = project?.edit.framing;
-
+function Brand() {
   return (
-    <div className="app">
-      <header className="editor-header">
-        <div className="brand">
-          <span className="logo-mark" aria-hidden="true">
-            <i />
-            <i />
-          </span>
-          <strong className="wordmark">cutback</strong>
-          <span className="breadcrumb">
-            <span>Projects / </span>
-            {project?.title ?? "Untitled project"}
-          </span>
-          <span className="saved">
-            <i />
-            {project ? "Saved" : "New project"}
-          </span>
-        </div>
-        <div className="header-actions">
-          <label className={busy ? "file-btn disabled" : "file-btn"}>
-            <span className="desktop-label">Upload</span>
-            <span className="mobile-label">+</span>
-            <input
-              type="file"
-              accept="video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.webm,.mkv,.m4v"
-              hidden
-              disabled={busy !== null}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                event.target.value = "";
-                if (file) void onUpload(file, true);
-              }}
-            />
-          </label>
-          <button
-            className="icon-button desktop-action"
-            aria-label="Undo"
-            disabled={!project || busy !== null}
-            onClick={() => void runTool("undo_edit", {})}
-          >
-            <Icon name="undo" />
-          </button>
-          <button
-            className="icon-button desktop-action"
-            aria-label="Redo"
-            disabled={!project || busy !== null}
-            onClick={() => void runTool("redo_edit", {})}
-          >
-            <Icon name="redo" />
-          </button>
-          <button
-            className="primary export-button"
-            disabled={
-              !project?.media ||
-              busy !== null ||
-              project.jobs.export.status === "running"
-            }
-            onClick={() => setExportOpen(true)}
-          >
-            Export
-          </button>
-          <button
-            className="icon-button mobile-action"
-            aria-label="More tools"
-            onClick={() => setMobileMenuOpen((open) => !open)}
-          >
-            <Icon name="more" />
-          </button>
-        </div>
-      </header>
+    <div className="brand">
+      <span className="brand-mark">
+        <i />
+        <i />
+      </span>
+      <strong>cutback</strong>
+    </div>
+  )
+}
 
-      <nav className="tool-nav" aria-label="Editor tools">
-        {editorTools.map((tool) => (
-          <button
-            key={tool.id}
-            className={activeTool === tool.id ? "active" : ""}
-            onClick={() => setActiveTool(tool.id)}
-          >
-            <Icon name={tool.id} size={23} />
-            <span>{tool.label}</span>
-          </button>
-        ))}
-      </nav>
-
-      {mobileMenuOpen ? (
-        <div className="mobile-tool-menu">
-          <button
-            onClick={() => {
-              setActiveTool("Media");
-              setMobileMenuOpen(false);
-            }}
-          >
-            Media & framing
-          </button>
-          <button
-            onClick={() => {
-              setActiveTool("History");
-              setMobileMenuOpen(false);
-            }}
-          >
-            History
-          </button>
-          <button onClick={() => void runTool("undo_edit", {})}>Undo</button>
-          <button onClick={() => void runTool("redo_edit", {})}>Redo</button>
-        </div>
-      ) : null}
-
-      <div className="workspace">
-        <section className="stage-wrap">
-          <div className="preview-top">
-            <span>Preview</span>
-            <div>
-              <button
-                className={!compareOriginal ? "on" : ""}
-                onClick={() => {
-                  setCompareOriginal(false);
-                  seekOutput(0);
-                }}
-              >
-                Edited
-              </button>
-              <button
-                className={compareOriginal ? "on" : ""}
-                onClick={() => {
-                  setCompareOriginal(true);
-                  seekOutput(0);
-                }}
-              >
-                Original
-              </button>
-              <select
-                aria-label="Aspect ratio"
-                value={framing?.mode ?? "original"}
-                disabled={!project?.media}
-                onChange={(event) =>
-                  void runTool("set_aspect_ratio", { mode: event.target.value })
-                }
-              >
-                <option value="original">Original</option>
-                <option value="wide">16:9</option>
-                <option value="square">1:1</option>
-                <option value="vertical">9:16</option>
-              </select>
-            </div>
-          </div>
-          {project?.media ? (
-            <div className={`frame ${framing?.mode ?? "original"}`}>
-              <video
-                ref={videoRef}
-                key={project.media.storedName + project.id}
-                src={`/api/projects/${project.id}/media`}
-                playsInline
-                preload="metadata"
-                onPlay={() => ensureAudio()}
-                style={
-                  framing && framing.mode !== "original"
-                    ? {
-                        objectFit: "cover",
-                        objectPosition: `${(framing.focus ?? 0.5) * 100}% 50%`,
-                      }
-                    : undefined
-                }
-              />
-              {framing?.mode !== "original" ? (
-                <div className="safe-area" aria-label="Caption safe area" />
-              ) : null}
-              {activeCue ? (
-                <p
-                  className="caption"
-                  style={{
-                    top: `${project.edit.captions.positionY * 100}%`,
-                    color: project.edit.captions.color,
-                    fontSize: `${project.edit.captions.fontScale}em`,
-                    fontFamily: project.edit.captions.fontFamily,
-                    background: project.edit.captions.background,
-                  }}
-                >
-                  {activeCue.words.map((word) => {
-                    const active =
-                      clock.outputMs >= word.outputStartMs &&
-                      clock.outputMs <= word.outputEndMs;
-                    return (
-                      <span
-                        key={word.id}
-                        style={
-                          active && project.edit.captions.wordHighlight
-                            ? { color: project.edit.captions.highlightColor }
-                            : undefined
-                        }
-                      >
-                        {word.text}{" "}
-                      </span>
-                    );
-                  })}
-                </p>
-              ) : null}
-              {project.music ? (
-                <audio
-                  ref={musicRef}
-                  src={`/api/projects/${project.id}/music`}
-                  loop
-                  preload="auto"
-                />
-              ) : null}
-            </div>
-          ) : (
-            <div
-              className="drop"
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={(event) => {
-                event.preventDefault();
-                const file = event.dataTransfer.files?.[0];
-                if (file) void onUpload(file);
-              }}
-            >
-              <label>
-                <input
-                  type="file"
-                  accept="video/mp4,video/quicktime,video/webm,video/x-matroska"
-                  hidden
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file) void onUpload(file);
-                  }}
-                />
-                <span className="mark">Drop a short video</span>
-                <span>MP4, MOV, WEBM, or MKV. Up to 2 minutes and 200 MB.</span>
-              </label>
-              <button
-                type="button"
-                onClick={() => void loadDemo()}
-                disabled={busy !== null}
-              >
-                Load the demo
-              </button>
-            </div>
-          )}
-          <div className="playback-controls">
-            <button
-              className="transport"
-              disabled={!project?.media}
-              onClick={togglePlay}
-              aria-label={playing ? "Pause" : "Play"}
-            >
-              <Icon name={playing ? "pause" : "play"} />
-            </button>
-            <input
-              aria-label="Playback position"
-              type="range"
-              min={0}
-              max={Math.max(
-                1,
-                compareOriginal
-                  ? (project?.media?.durationMs ?? 0)
-                  : (project?.outputDurationMs ?? 0),
-              )}
-              value={clock.outputMs}
-              disabled={!project?.media}
-              onChange={(event) => seekOutput(Number(event.target.value))}
-            />
-            <span>
-              {formatTime(clock.outputMs)} /{" "}
-              {formatTime(
-                compareOriginal
-                  ? (project?.media?.durationMs ?? 0)
-                  : (project?.outputDurationMs ?? 0),
-              )}
-            </span>
-            <button
-              className="transport"
-              disabled={!project?.media}
-              aria-label="Fullscreen preview"
-              onClick={() =>
-                void videoRef.current?.parentElement?.requestFullscreen?.()
-              }
-            >
-              <Icon name="fullscreen" />
-            </button>
-          </div>
-          <div className="mobile-tabs" role="tablist">
-            {(["Transcript", "Captions", "Audio"] as EditorTool[]).map(
-              (tool) => (
-                <button
-                  role="tab"
-                  aria-selected={activeTool === tool}
-                  key={tool}
-                  className={activeTool === tool ? "active" : ""}
-                  onClick={() => setActiveTool(tool)}
-                >
-                  {tool === "Transcript" ? "Edit" : tool}
-                </button>
-              ),
-            )}
-          </div>
-          {activeTool === "Transcript" ? (
-            <div className="mobile-timeline">
-              <Timeline
-                project={project}
-                original={compareOriginal}
-                outputMs={clock.outputMs}
-                onSeek={(ms) => {
-                  ensureAudio();
-                  seekOutput(ms);
-                }}
-              />
-            </div>
-          ) : null}
-          {project?.media && !project.transcript ? (
-            <div className="status-row">
-              <span>
-                {project.jobs.transcription.status === "running"
-                  ? "Transcribing with AssemblyAI"
-                  : project.jobs.transcription.status === "error"
-                    ? project.jobs.transcription.error
-                    : "Ready to transcribe"}
-              </span>
-              <button
-                disabled={
-                  project.jobs.transcription.status === "running" ||
-                  !health.assemblyai
-                }
-                onClick={() =>
-                  void api
-                    .transcribe(project.id)
-                    .then(remember)
-                    .catch((error: Error) => setNotice(error.message))
-                }
-              >
-                {project.jobs.transcription.status === "error"
-                  ? "Retry transcription"
-                  : "Transcribe"}
-              </button>
-            </div>
-          ) : null}
-        </section>
-
-        <aside
-          className={`transcript inspector tool-${activeTool.toLowerCase()}`}
-        >
-          <div className="aside-head tool-heading">
-            <div>
-              <h2>{activeTool}</h2>
-              <small>
-                {activeTool === "Transcript"
-                  ? "Select words to edit"
-                  : activeTool === "Captions"
-                    ? "Style text on your video"
-                    : activeTool === "Audio"
-                      ? "Balance speech and music"
-                      : activeTool === "Media"
-                        ? "Source and framing"
-                        : "Applied project edits"}
-              </small>
-            </div>
-            {activeTool === "Transcript" ? (
-              <span>
-                {selected.length
-                  ? `${selected.length} selected`
-                  : "Click a word"}
-              </span>
-            ) : null}
-          </div>
-          {project?.transcriptSource === "demo-fixture" ? (
-            <p className="fixture transcript-section">
-              Demo fixture. Sentence timing is measured. Word timing inside a
-              sentence is evenly split until AssemblyAI transcribes it.
-            </p>
-          ) : null}
-          <div className="sentences transcript-section">
-            {project?.transcript?.sentences.map((sentence) => {
-              const removed = sentence.wordIds.every((id) =>
-                project.removedWordIds.includes(id),
-              );
-              return (
-                <p
-                  key={sentence.id}
-                  className={removed ? "sentence gone" : "sentence"}
-                >
-                  <button
-                    className="sid"
-                    onClick={() => {
-                      setSelected(sentence.wordIds);
-                      const video = videoRef.current;
-                      if (video && !removed) {
-                        ensureAudio();
-                        video.currentTime = sentence.startMs / 1000;
-                      }
-                    }}
-                  >
-                    {sentence.id}
-                  </button>
-                  {sentence.wordIds.map((id) => {
-                    const word = project.transcript?.words.find(
-                      (item) => item.id === id,
-                    );
-                    if (!word) return null;
-                    const isRemoved = project.removedWordIds.includes(id);
-                    const marked = project.highlight?.ranges.some(
-                      (range) =>
-                        word.endMs > range.startMs &&
-                        word.startMs < range.endMs,
-                    );
-                    const active =
-                      !isRemoved &&
-                      clock.sourceMs >= word.startMs &&
-                      clock.sourceMs < word.endMs;
-                    return (
-                      <button
-                        key={id}
-                        className={[
-                          "word",
-                          isRemoved ? "removed" : "",
-                          selected.includes(id) ? "selected" : "",
-                          marked
-                            ? project.highlight?.pending
-                              ? "pending"
-                              : "marked"
-                            : "",
-                          active ? "active" : "",
-                        ]
-                          .filter(Boolean)
-                          .join(" ")}
-                        onClick={(event) => onWordClick(word, event)}
-                      >
-                        {word.text}
-                      </button>
-                    );
-                  })}
-                </p>
-              );
-            })}
-            {!project?.transcript ? (
-              <p className="empty">
-                The transcript shows up here after transcription.
-              </p>
-            ) : null}
-          </div>
-          <div className="edit-actions transcript-section">
-            <button
-              disabled={!project?.media}
-              onClick={() => {
-                setCompareOriginal((value) => !value);
-                videoRef.current?.pause();
-                seekOutput(0);
-              }}
-            >
-              {compareOriginal ? "Return to edit" : "Compare original"}
-            </button>
-            <button
-              disabled={!selected.length || busy !== null}
-              onClick={() =>
-                void runTool("propose_cut", {
-                  action: "remove",
-                  use: "selection",
-                })
-              }
-            >
-              Cut selection
-            </button>
-            <button
-              disabled={!selected.length || busy !== null}
-              onClick={() =>
-                void runTool("restore_section", { use: "selection" })
-              }
-            >
-              Restore selection
-            </button>
-            <button
-              disabled={!selected.length || busy !== null}
-              onClick={() =>
-                void runTool("reorder_sections", {
-                  moving_use: "selection",
-                  place: "start",
-                })
-              }
-            >
-              Move to start
-            </button>
-            <button
-              disabled={!project?.transcript || busy !== null}
-              onClick={() =>
-                void runTool("propose_pause_shortening", {
-                  threshold_ms: 800,
-                  retain_ms: project?.edit.pause.retainMs || 180,
-                })
-              }
-            >
-              Shorten pauses
-            </button>
-            <button
-              disabled={!project?.transcript || busy !== null}
-              onClick={() =>
-                void runTool("set_caption_style", {
-                  enabled: !project?.edit.captions.enabled,
-                })
-              }
-            >
-              {project?.edit.captions.enabled ? "Hide captions" : "Captions"}
-            </button>
-            <button
-              disabled={!project?.media || busy !== null}
-              onClick={() =>
-                void runTool("set_aspect_ratio", {
-                  mode:
-                    project?.edit.framing.mode === "vertical"
-                      ? "original"
-                      : "vertical",
-                })
-              }
-            >
-              {project?.edit.framing.mode === "vertical"
-                ? "Original frame"
-                : "Vertical"}
-            </button>
-            <button
-              disabled={!project?.transcript || busy !== null}
-              onClick={() =>
-                void runTool("suggest_shorter_cut", {
-                  target_seconds: 30,
-                  focus: "main announcement",
-                })
-              }
-            >
-              Suggest 30s cut
-            </button>
-          </div>
-          {project?.transcript ? (
-            <section className="control-panel caption-section">
-              <strong>Caption style</strong>
-              <div className="compact-row">
-                {(["clean", "bold", "minimal"] as const).map((preset) => (
-                  <button
-                    key={preset}
-                    className={`preset-card ${project.edit.captions.preset === preset ? "on" : ""}`}
-                    onClick={() =>
-                      void runTool("set_caption_style", {
-                        enabled: true,
-                        preset,
-                      })
-                    }
-                  >
-                    <b>Your words</b>
-                    <span>{preset === "minimal" ? "Minimal" : preset}</span>
-                  </button>
-                ))}
-              </div>
-              <button
-                className={project.edit.captions.enabled ? "on" : ""}
-                onClick={() =>
-                  void runTool("set_caption_style", {
-                    enabled: !project.edit.captions.enabled,
-                  })
-                }
-              >
-                {project.edit.captions.enabled
-                  ? "Captions on"
-                  : "Turn captions on"}
-              </button>
-              <label>
-                Size{" "}
-                <input
-                  type="range"
-                  min="0.7"
-                  max="1.8"
-                  step="0.1"
-                  value={project.edit.captions.fontScale}
-                  onChange={(event) =>
-                    void runTool("set_caption_style", {
-                      enabled: true,
-                      font_scale: Number(event.target.value),
-                    })
-                  }
-                />
-              </label>
-              <label>
-                Text{" "}
-                <input
-                  type="color"
-                  value={project.edit.captions.color}
-                  onChange={(event) =>
-                    void runTool("set_caption_style", {
-                      enabled: true,
-                      color: event.target.value,
-                    })
-                  }
-                />
-              </label>
-              <label>
-                Highlight{" "}
-                <input
-                  type="color"
-                  value={project.edit.captions.highlightColor}
-                  onChange={(event) =>
-                    void runTool("set_caption_style", {
-                      enabled: true,
-                      word_highlight: true,
-                      highlight_color: event.target.value,
-                    })
-                  }
-                />
-              </label>
-              <label>
-                Position{" "}
-                <span className="positions">
-                  {(["top", "center", "bottom"] as const).map((position) => (
-                    <button
-                      key={position}
-                      className={
-                        project.edit.captions.position === position ? "on" : ""
-                      }
-                      onClick={() =>
-                        void runTool("set_caption_style", {
-                          enabled: true,
-                          position,
-                        })
-                      }
-                    >
-                      {position === "center" ? "Middle" : position}
-                    </button>
-                  ))}
-                </span>
-              </label>
-              <label>
-                Fine height{" "}
-                <input
-                  type="range"
-                  min="0.08"
-                  max="0.92"
-                  step="0.02"
-                  value={project.edit.captions.positionY}
-                  onChange={(event) =>
-                    void runTool("set_caption_style", {
-                      enabled: true,
-                      position_y: Number(event.target.value),
-                    })
-                  }
-                />
-              </label>
-            </section>
-          ) : null}
-          {project?.media ? (
-            <section className="control-panel media-section media-card">
-              <strong>{project.media.filename}</strong>
-              <small>
-                {project.media.width} × {project.media.height} ·{" "}
-                {formatTime(project.media.durationMs)} ·{" "}
-                {project.media.hasAudio ? "Audio detected" : "No audio track"}
-              </small>
-              <strong>Frame</strong>
-              <div className="compact-row">
-                {(["original", "wide", "square", "vertical"] as const).map(
-                  (mode) => (
-                    <button
-                      key={mode}
-                      className={project.edit.framing.mode === mode ? "on" : ""}
-                      onClick={() => void runTool("set_aspect_ratio", { mode })}
-                    >
-                      {mode === "wide"
-                        ? "16:9"
-                        : mode === "square"
-                          ? "1:1"
-                          : mode === "vertical"
-                            ? "9:16"
-                            : "Original"}
-                    </button>
-                  ),
-                )}
-              </div>
-            </section>
-          ) : null}
-          {project && project.edit.framing.mode !== "original" ? (
-            <label className="focus media-section">
-              Crop position
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.01}
-                value={project.edit.framing.focus}
-                onChange={(event) => {
-                  const focus = Number(event.target.value);
-                  setProject(
-                    present({
-                      ...project,
-                      edit: {
-                        ...project.edit,
-                        framing: { ...project.edit.framing, focus },
-                      },
-                    }),
-                  );
-                }}
-                onPointerUp={(event) => {
-                  const focus = Number(
-                    (event.target as HTMLInputElement).value,
-                  );
-                  void runTool("set_aspect_ratio", {
-                    mode: project.edit.framing.mode,
-                    focus,
-                  });
-                }}
-              />
-            </label>
-          ) : null}
-          {project?.media ? (
-            <section className="control-panel audio-section">
-              <strong>Audio</strong>
-              <label>
-                Speech {Math.round(project.edit.audio.speechVolume * 100)}%{" "}
-                <input
-                  type="range"
-                  min="0"
-                  max="2"
-                  step="0.05"
-                  value={project.edit.audio.speechVolume}
-                  onChange={(event) =>
-                    void runTool("set_audio_mix", {
-                      speech_volume: Number(event.target.value),
-                    })
-                  }
-                />
-              </label>
-              <label className="file-btn">
-                {project.music
-                  ? `Music: ${project.music.filename}`
-                  : "Add background music"}
-                <input
-                  hidden
-                  type="file"
-                  accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file)
-                      void api
-                        .uploadMusic(project.id, file)
-                        .then(remember)
-                        .catch((error: Error) => setNotice(error.message));
-                  }}
-                />
-              </label>
-              {project.music ? (
-                <>
-                  <label>
-                    Music {Math.round(project.edit.audio.musicVolume * 100)}%{" "}
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.02"
-                      value={project.edit.audio.musicVolume}
-                      onChange={(event) =>
-                        void runTool("set_audio_mix", {
-                          music_volume: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </label>
-                  <button
-                    className={project.edit.audio.duckMusic ? "on" : ""}
-                    onClick={() =>
-                      void runTool("set_audio_mix", {
-                        duck_music: !project.edit.audio.duckMusic,
-                      })
-                    }
-                  >
-                    Lower under speech
-                  </button>
-                </>
-              ) : null}
-            </section>
-          ) : null}
-          {project?.proposals
-            .filter(
-              (item) => item.kind === "shorter" && item.status === "pending",
-            )
-            .map((proposal) => (
-              <section
-                className="proposal transcript-section"
-                key={proposal.id}
-              >
-                <strong>{proposal.summary}</strong>
-                <small>{proposal.explanation}</small>
-                <ol>
-                  {proposal.sequence?.map((item) => (
-                    <li key={item.sentenceId}>{item.text}</li>
-                  ))}
-                </ol>
-                <div className="compact-row">
-                  <button
-                    onClick={() => {
-                      const first = proposal.sequence?.[0];
-                      if (first)
-                        void runTool("preview_segment", {
-                          sentence_id: first.sentenceId,
-                        });
-                    }}
-                  >
-                    Preview
-                  </button>
-                  <button
-                    onClick={() =>
-                      void runTool("revise_shorter_cut", {
-                        proposal_id: proposal.id,
-                        keep_first_question: true,
-                      })
-                    }
-                  >
-                    Keep first question
-                  </button>
-                  <button
-                    onClick={() =>
-                      void runTool("apply_edit", { proposal_id: proposal.id })
-                    }
-                  >
-                    Approve
-                  </button>
-                </div>
-              </section>
-            ))}
-          {project?.edit.history.length ? (
-            <section className="history history-section">
-              <strong>Edit history</strong>
-              <ol>
-                {[...project.edit.history]
-                  .reverse()
-                  .slice(0, 20)
-                  .map((entry) => (
-                    <li key={entry.id}>{entry.summary}</li>
-                  ))}
-              </ol>
-            </section>
-          ) : (
-            <p className="empty history-section">No edits applied yet.</p>
-          )}
-          {project?.edit.pause.thresholdMs ? (
-            <label className="focus transcript-section">
-              Kept silence {project.edit.pause.retainMs} ms
-              <input
-                type="range"
-                min={0}
-                max={Math.max(200, project.edit.pause.thresholdMs)}
-                step={20}
-                value={project.edit.pause.retainMs}
-                onChange={(event) => {
-                  const retainMs = Number(event.target.value);
-                  setProject(
-                    present({
-                      ...project,
-                      edit: {
-                        ...project.edit,
-                        pause: { ...project.edit.pause, retainMs },
-                      },
-                    }),
-                  );
-                }}
-                onPointerUp={(event) => {
-                  const retainMs = Number(
-                    (event.target as HTMLInputElement).value,
-                  );
-                  void runTool("propose_pause_shortening", {
-                    threshold_ms: project.edit.pause.thresholdMs,
-                    retain_ms: retainMs,
-                  });
-                }}
-              />
-            </label>
-          ) : null}
-        </aside>
+export function EditorHeader({
+  onExport,
+  onUndo,
+  onRedo,
+  canRedo,
+  onMore,
+}: {
+  onExport: () => void
+  onUndo: () => void
+  onRedo: () => void
+  canRedo: boolean
+  onMore: () => void
+}) {
+  const [title, setTitle] = useState("My AI tool review")
+  return (
+    <header className="editor-header">
+      <div className="desktop-only header-left">
+        <Brand />
+        <span className="header-divider" />
+        <label className="breadcrumb">
+          Projects&nbsp; / &nbsp;
+          <input
+            aria-label="Project title"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+          />
+        </label>
+        <span className="saved">
+          <i />
+          Saved
+        </span>
+        <span className="demo-badge">Demo project</span>
       </div>
-
-      <section className="voicebar">
+      <div className="mobile-only mobile-head">
         <button
-          className={voicePhase === "off" ? "mic" : "mic live"}
-          aria-label={
-            voicePhase === "off" ? "Start microphone" : "Disconnect microphone"
-          }
-          onClick={() =>
-            voicePhase === "off" ? void startVoice() : stopVoice()
-          }
+          className="icon-btn"
+          aria-label="Back"
+          onClick={() => window.history.back()}
         >
-          <Icon name={voicePhase === "off" ? "mic" : "stop"} size={24} />
-          <span>{voicePhase === "off" ? "Start mic" : "Stop"}</span>
+          <Icon name="back" />
+        </button>
+        <Brand />
+        <b className="mobile-project">AI tool review</b>
+      </div>
+      <div className="header-actions">
+        <button
+          className="icon-btn desktop-only"
+          onClick={onUndo}
+          aria-label="Undo"
+        >
+          <Icon name="undo" />
         </button>
         <button
-          className={ptt ? "toggle on" : "toggle"}
-          onPointerDown={() => {
-            if (!ptt || voicePhase === "off") return;
-            voiceRef.current?.setHeld(true);
-          }}
-          onPointerUp={() => voiceRef.current?.setHeld(false)}
-          onPointerLeave={() => voiceRef.current?.setHeld(false)}
-          onClick={() => {
-            const next = !ptt;
-            setPtt(next);
-            voiceRef.current?.setPushToTalk(next);
-            voiceRef.current?.setHeld(false);
-          }}
+          className="icon-btn desktop-only"
+          onClick={onRedo}
+          disabled={!canRedo}
+          aria-label="Redo"
         >
-          {ptt ? "Hold V to talk" : "Open mic"}
+          <Icon name="redo" />
         </button>
-        <div className="meter" aria-hidden>
-          <span style={{ width: `${Math.min(100, level * 420)}%` }} />
-        </div>
-        <div className="voice-copy">
-          <strong>
-            {voicePhase !== "off" && level > 0.02
-              ? "Mic hears you"
-              : phaseLabel(voicePhase)}
-          </strong>
-          <em>
-            {voiceDetail ||
-              (line
-                ? `${line.who === "user" ? "You" : "Cutback"}: ${line.text}`
-                : "The bar should jump while you talk.")}
-          </em>
-        </div>
-      </section>
+        <button
+          className="icon-btn mobile-only"
+          onClick={onMore}
+          aria-label="More tools"
+        >
+          <Icon name="more" />
+        </button>
+        <button className="primary export-button" onClick={onExport}>
+          Export
+        </button>
+      </div>
+    </header>
+  )
+}
 
-      <div className="desktop-timeline">
-        <Timeline
-          project={project}
-          original={compareOriginal}
-          outputMs={clock.outputMs}
-          onSeek={(ms) => {
-            ensureAudio();
-            seekOutput(ms);
+export function ToolNavigation({
+  active,
+  onChange,
+}: {
+  active: Tool
+  onChange: (tool: Tool) => void
+}) {
+  return (
+    <nav className="tool-navigation" aria-label="Editor tools">
+      {toolLabels.map((tool) => (
+        <button
+          key={tool.id}
+          className={active === tool.id ? "active" : ""}
+          onClick={() => onChange(tool.id)}
+        >
+          <Icon name={tool.icon} size={21} />
+          <span>{tool.label}</span>
+        </button>
+      ))}
+    </nav>
+  )
+}
+
+export function PlaybackControls({
+  currentTime,
+  playing,
+  muted,
+  onPlay,
+  onSeek,
+  onMute,
+  onFullscreen,
+}: {
+  currentTime: number
+  playing: boolean
+  muted: boolean
+  onPlay: () => void
+  onSeek: (value: number) => void
+  onMute: () => void
+  onFullscreen: () => void
+}) {
+  return (
+    <div className="playback">
+      <button
+        className="play-button"
+        onClick={onPlay}
+        aria-label={playing ? "Pause" : "Play"}
+      >
+        <Icon name={playing ? "pause" : "play"} size={22} />
+      </button>
+      <span className="time">{formatTime(currentTime)} / 00:48</span>
+      <input
+        aria-label="Playback position"
+        type="range"
+        min="0"
+        max={duration}
+        step=".1"
+        value={currentTime}
+        onChange={(event) => onSeek(Number(event.target.value))}
+        style={
+          {
+            "--progress": `${(currentTime / duration) * 100}%`,
+          } as React.CSSProperties
+        }
+      />
+      <button
+        className={`icon-btn ${muted ? "muted" : ""}`}
+        onClick={onMute}
+        aria-label={muted ? "Unmute preview" : "Mute preview"}
+      >
+        <Icon name="volume" />
+      </button>
+      <button
+        className="icon-btn"
+        onClick={onFullscreen}
+        aria-label="Enter fullscreen preview"
+      >
+        <Icon name="expand" />
+      </button>
+    </div>
+  )
+}
+
+export function VideoPreview({
+  currentTime,
+  playing,
+  ratio,
+  captionStyle,
+  captionSize,
+  captionPosition,
+  showGuides,
+  mode,
+  onPlay,
+  onSeek,
+  onRatio,
+  onMode,
+}: {
+  currentTime: number
+  playing: boolean
+  ratio: string
+  captionStyle: CaptionStyle
+  captionSize: number
+  captionPosition: string
+  showGuides: boolean
+  mode: "original" | "edited"
+  onPlay: () => void
+  onSeek: (value: number) => void
+  onRatio: (ratio: string) => void
+  onMode: (mode: "original" | "edited") => void
+}) {
+  const stageRef = useRef<HTMLDivElement>(null)
+  const [muted, setMuted] = useState(false)
+  const active =
+    [...sentences]
+      .reverse()
+      .find((sentence) => currentTime >= sentence.start) || sentences[0]
+  return (
+    <section className="preview-panel">
+      <div className="preview-toolbar desktop-only">
+        <span>Preview</span>
+        <div className="toolbar-right">
+          <div className="segmented mini">
+            <button
+              className={mode === "original" ? "active" : ""}
+              onClick={() => onMode("original")}
+            >
+              Original
+            </button>
+            <button
+              className={mode === "edited" ? "active" : ""}
+              onClick={() => onMode("edited")}
+            >
+              Edited
+            </button>
+          </div>
+          <select
+            aria-label="Aspect ratio"
+            value={ratio}
+            onChange={(event) => onRatio(event.target.value)}
+          >
+            <option>16:9</option>
+            <option>Original</option>
+            <option>1:1</option>
+            <option>9:16</option>
+          </select>
+        </div>
+      </div>
+      <div
+        ref={stageRef}
+        className={`video-stage ratio-${ratio.replace(":", "-").toLowerCase()}`}
+      >
+        <img
+          src={mediaImage}
+          alt="Creator recording a video in a home studio"
+        />
+        {showGuides && <div className="safe-guides" />}
+        {mode === "edited" && (
+          <div
+            className={`caption caption-${captionStyle} position-${captionPosition.toLowerCase()}`}
+            style={
+              { "--caption-size": `${captionSize}px` } as React.CSSProperties
+            }
+          >
+            {active.text}
+          </div>
+        )}
+      </div>
+      <PlaybackControls
+        currentTime={currentTime}
+        playing={playing}
+        muted={muted}
+        onPlay={onPlay}
+        onSeek={onSeek}
+        onMute={() => setMuted((value) => !value)}
+        onFullscreen={() => stageRef.current?.requestFullscreen?.()}
+      />
+    </section>
+  )
+}
+
+export function EditProposal({
+  state,
+  onPreview,
+  onApply,
+  onDismiss,
+}: {
+  state: "pending" | "applying" | "applied" | "dismissed"
+  onPreview: () => void
+  onApply: () => void
+  onDismiss: () => void
+}) {
+  if (state === "dismissed") return null
+  return (
+    <div className={`proposal ${state}`}>
+      <span className="proposal-icon">
+        <Icon name={state === "applied" ? "check" : "scissors"} />
+      </span>
+      <div>
+        <b>
+          {state === "applied" ? "Introduction trimmed" : "Trim introduction"}
+        </b>
+        <span>
+          {state === "applying"
+            ? "Applying edit…"
+            : state === "applied"
+              ? "Edit applied · 4.2 seconds removed"
+              : "Remove 4.2 seconds"}
+        </span>
+      </div>
+      {state === "pending" && (
+        <div className="proposal-actions">
+          <button onClick={onPreview}>Preview</button>
+          <button className="primary" onClick={onApply}>
+            Apply
+          </button>
+          <button className="dismiss desktop-only" onClick={onDismiss}>
+            Dismiss
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MobileTimeline({
+  currentTime,
+  onSeek,
+}: {
+  currentTime: number
+  onSeek: (time: number) => void
+}) {
+  return (
+    <div className="mobile-mini-timeline mobile-only">
+      <div className="mini-ruler">
+        {[0, 10, 20, 30, 40].map((tick) => (
+          <span key={tick}>{formatTime(tick)}</span>
+        ))}
+      </div>
+      <div className="mini-strip">
+        {[0, 1, 2, 3, 4].map((frame) => (
+          <img
+            src={mediaImage}
+            alt=""
+            key={frame}
+            style={{ objectPosition: `${18 + frame * 16}% 44%` }}
+          />
+        ))}
+        <i style={{ left: `${(currentTime / duration) * 100}%` }} />
+        <button
+          aria-label="Seek compact timeline"
+          onClick={(event) => {
+            const bounds = event.currentTarget.getBoundingClientRect()
+            onSeek(((event.clientX - bounds.left) / bounds.width) * duration)
           }}
         />
       </div>
-      {notice ? <p className="notice">{notice}</p> : null}
-      {exportOpen ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={() => setExportOpen(false)}
-        >
-          <section
-            className="export-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="export-title"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <button
-              className="modal-close"
-              aria-label="Close export"
-              onClick={() => setExportOpen(false)}
-            >
-              ×
-            </button>
-            <h2 id="export-title">
-              {exportReady
-                ? "Your video is ready"
-                : project?.jobs.export.status === "running"
-                  ? "Exporting video"
-                  : project?.jobs.export.status === "error"
-                    ? "Export failed"
-                    : "Export video"}
-            </h2>
-            {project?.jobs.export.status === "running" ? (
-              <>
-                <p>
-                  Rendering the edited timeline, framing, captions and audio.
-                </p>
-                <progress max={1} value={project.jobs.export.progress} />
-                <strong>
-                  {Math.round(project.jobs.export.progress * 100)}%
-                </strong>
-              </>
-            ) : exportReady && project ? (
-              <>
-                <p>
-                  {project.title} · {formatTime(project.outputDurationMs)}
-                </p>
-                <a
-                  className="download primary"
-                  href={`/api/projects/${project.id}/export`}
-                >
-                  <Icon name="download" /> Download MP4
-                </a>
-                <a
-                  className="download secondary"
-                  href={`/api/projects/${project.id}/subtitles.srt`}
-                >
-                  <Icon name="download" /> Download SRT
-                </a>
-                <small>
-                  SRT follows the edited timeline. Visual caption styling is
-                  embedded only in the MP4.
-                </small>
-              </>
-            ) : (
-              <>
-                <p>
-                  {project?.jobs.export.error ||
-                    "Exports an MP4 from the same timeline used by this preview."}
-                </p>
-                <div className="format-row">
-                  <button className="on">
-                    MP4 <small>Video + styled captions</small>
-                  </button>
-                  <button disabled>
-                    SRT <small>Available after export</small>
-                  </button>
-                </div>
-                <button
-                  className="primary export-submit"
-                  disabled={!project?.media || busy !== null}
-                  onClick={() => void runTool("export_video", {})}
-                >
-                  {project?.jobs.export.status === "error"
-                    ? "Retry export"
-                    : "Export MP4"}
-                </button>
-              </>
-            )}
-          </section>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function Timeline({
-  project,
-  original,
-  outputMs,
-  onSeek,
-}: {
-  project: PresentedProject | null;
-  original: boolean;
-  outputMs: number;
-  onSeek: (ms: number) => void;
-}) {
-  const segments = original
-    ? (project?.originalSegments ?? [])
-    : (project?.segments ?? []);
-  const duration = segments.length
-    ? segments[segments.length - 1].outputEndMs
-    : 0;
-  const playhead = duration > 0 ? (outputMs / duration) * 100 : 0;
-  const ticks = [0, 0.25, 0.5, 0.75, 1];
-  return (
-    <section
-      className="timeline"
-      onClick={(event) => {
-        if (!duration) return;
-        const rect = event.currentTarget.getBoundingClientRect();
-        const ratio = (event.clientX - rect.left) / rect.width;
-        onSeek(Math.max(0, Math.min(duration, ratio * duration)));
-      }}
-    >
-      <div className="timeline-toolbar">
-        <strong>Timeline</strong>
-        <span>{formatTime(duration)} duration</span>
-        <span>{project?.edit.history.length ?? 0} edits</span>
-      </div>
-      <div className="ruler">
-        {ticks.map((tick) => (
-          <span key={tick}>{formatTime(duration * tick)}</span>
+      <div className="mini-waveform">
+        {Array.from({ length: 54 }, (_, index) => (
+          <i
+            key={index}
+            style={{ height: `${22 + ((index * 19) % 70)}%` }}
+          />
         ))}
       </div>
-      <div className="timeline-row video-row">
-        <b>Video</b>
-        <div className="track">
-          {segments.map((segment, index) => {
-            const left = (segment.outputStartMs / duration) * 100;
-            const width =
-              ((segment.outputEndMs - segment.outputStartMs) / duration) * 100;
-            return (
-              <i
-                key={segment.id}
-                style={{ left: `${left}%`, width: `${width}%` }}
-              >
-                <span>{index + 1}</span>
-              </i>
-            );
-          })}
-          <em className="playhead" style={{ left: `${playhead}%` }} />
+    </div>
+  )
+}
+
+export function TranscriptPanel({
+  currentTime,
+  removed,
+  proposalState,
+  onSeek,
+  onPropose,
+  onPreview,
+  onApply,
+  onDismiss,
+  onUndo,
+  onRedo,
+}: {
+  currentTime: number
+  removed: boolean
+  proposalState: "pending" | "applying" | "applied" | "dismissed"
+  onSeek: (time: number) => void
+  onPropose: (id: number) => void
+  onPreview: () => void
+  onApply: () => void
+  onDismiss: () => void
+  onUndo: () => void
+  onRedo: () => void
+}) {
+  const [searching, setSearching] = useState(false)
+  const [query, setQuery] = useState("")
+  const active = [...sentences]
+    .reverse()
+    .find((sentence) => currentTime >= sentence.start)?.id
+  const visibleSentences = query
+    ? sentences.filter((sentence) =>
+        sentence.text.toLowerCase().includes(query.toLowerCase()),
+      )
+    : sentences
+  return (
+    <section className="inspector transcript-panel">
+      <div className="inspector-header">
+        <div>
+          <h2>Transcript</h2>
+          <span className="desktop-only">Select a sentence to edit</span>
+        </div>
+        <div>
+          <button
+            className="icon-btn"
+            aria-label="Search transcript"
+            aria-pressed={searching}
+            onClick={() => setSearching((value) => !value)}
+          >
+            <Icon name="search" />
+          </button>
         </div>
       </div>
-      <div className="timeline-row caption-row">
-        <b>CC&nbsp; Captions</b>
-        <div className="caption-blocks">
-          {project?.cues.map((cue) => (
-            <i
-              key={cue.id}
-              title={cue.text}
-              style={{
-                left: `${(cue.outputStartMs / Math.max(1, duration)) * 100}%`,
-                width: `${((cue.outputEndMs - cue.outputStartMs) / Math.max(1, duration)) * 100}%`,
-              }}
-            >
-              {cue.text}
-            </i>
+      {searching && (
+        <div className="transcript-search">
+          <Icon name="search" size={16} />
+          <input
+            autoFocus
+            aria-label="Search transcript text"
+            placeholder="Search transcript"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <button
+            className="icon-btn"
+            aria-label="Close transcript search"
+            onClick={() => {
+              setQuery("")
+              setSearching(false)
+            }}
+          >
+            <Icon name="close" size={16} />
+          </button>
+        </div>
+      )}
+      <MobileTimeline currentTime={currentTime} onSeek={onSeek} />
+      <div className="mobile-only transcript-undo">
+        <button onClick={onUndo}>
+          <Icon name="undo" />
+          Undo
+        </button>
+        <button onClick={onRedo}>
+          <Icon name="redo" />
+          Redo
+        </button>
+      </div>
+      <div className="transcript-list">
+        {visibleSentences.map((sentence) => (
+          <button
+            key={sentence.id}
+            className={`${active === sentence.id ? "active" : ""} ${
+              sentence.id === 0 && !removed ? "proposed-remove" : ""
+            } ${sentence.id === 0 && removed ? "removed" : ""}`}
+            onClick={() => onSeek(sentence.start)}
+            onDoubleClick={() => onPropose(sentence.id)}
+          >
+            <time>{formatTime(sentence.start)}</time>
+            <span>{sentence.text}</span>
+            {sentence.id === 0 && !removed && <em>(remove)</em>}
+          </button>
+        ))}
+      </div>
+      <button
+        className="selection-action"
+        onClick={() => onPropose(active ?? 0)}
+      >
+        <Icon name="scissors" size={16} /> Propose removing selected sentence
+      </button>
+      <EditProposal
+        state={proposalState}
+        onPreview={onPreview}
+        onApply={onApply}
+        onDismiss={onDismiss}
+      />
+    </section>
+  )
+}
+
+function Preset({
+  name,
+  active,
+  onClick,
+}: {
+  name: CaptionStyle
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button className={`preset ${active ? "active" : ""}`} onClick={onClick}>
+      <span className={`sample-${name}`}>Your words</span>
+      <b>{name[0].toUpperCase() + name.slice(1)}</b>
+    </button>
+  )
+}
+
+export function CaptionInspector({
+  style,
+  size,
+  position,
+  safe,
+  onStyle,
+  onSize,
+  onPosition,
+  onSafe,
+}: {
+  style: CaptionStyle
+  size: number
+  position: string
+  safe: boolean
+  onStyle: (style: CaptionStyle) => void
+  onSize: (size: number) => void
+  onPosition: (position: string) => void
+  onSafe: (safe: boolean) => void
+}) {
+  const [textColor, setTextColor] = useState("white")
+  const [highlightColor, setHighlightColor] = useState("mint")
+  return (
+    <section className="inspector settings-panel">
+      <div className="inspector-header">
+        <h2>Captions</h2>
+        <span className="demo-badge">Live preview</span>
+      </div>
+      <fieldset>
+        <legend>Caption style</legend>
+        <div className="preset-grid">
+          {(["clean", "bold", "highlight"] as CaptionStyle[]).map((name) => (
+            <Preset
+              key={name}
+              name={name}
+              active={style === name}
+              onClick={() => onStyle(name)}
+            />
           ))}
         </div>
-      </div>
-      <div className="timeline-row speech-row">
-        <b>Audio</b>
-        <div className="speech-activity">
-          {project?.cues
-            .flatMap((cue) => cue.words)
-            .map((word) => (
-              <i
-                key={word.id}
-                style={{
-                  left: `${(word.outputStartMs / Math.max(1, duration)) * 100}%`,
-                  width: `${Math.max(0.18, ((word.outputEndMs - word.outputStartMs) / Math.max(1, duration)) * 100)}%`,
-                }}
+      </fieldset>
+      <label className="range-row">
+        <span>Size</span>
+        <input
+          type="range"
+          min="22"
+          max="42"
+          value={size}
+          onChange={(event) => onSize(Number(event.target.value))}
+        />
+        <output>{size}</output>
+      </label>
+      <fieldset>
+        <legend>Text colour</legend>
+        <div className="swatches">
+          {["white", "slate", "black", "cream", "pink", "blue"].map(
+            (color) => (
+              <button
+                key={color}
+                className={`swatch ${color} ${textColor === color ? "selected" : ""}`}
+                aria-label={`${color} text`}
+                aria-pressed={textColor === color}
+                onClick={() => setTextColor(color)}
               />
+            ),
+          )}
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Highlight</legend>
+        <div className="swatches">
+          {["mint", "yellow", "orange", "rose", "violet", "blue"].map(
+            (color) => (
+              <button
+                key={color}
+                className={`swatch ${color} ${highlightColor === color ? "selected" : ""}`}
+                aria-label={`${color} highlight`}
+                aria-pressed={highlightColor === color}
+                onClick={() => setHighlightColor(color)}
+              />
+            ),
+          )}
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Position</legend>
+        <div className="segmented three">
+          {["Top", "Middle", "Bottom"].map((item) => (
+            <button
+              key={item}
+              className={position === item ? "active" : ""}
+              onClick={() => onPosition(item)}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+      </fieldset>
+      <label className="toggle-row">
+        <span>Keep within safe area</span>
+        <input
+          type="checkbox"
+          checked={safe}
+          onChange={(event) => onSafe(event.target.checked)}
+        />
+        <i />
+      </label>
+    </section>
+  )
+}
+
+export function AudioInspector({
+  volume,
+  music,
+  onVolume,
+  onMusic,
+}: {
+  volume: number
+  music: boolean
+  onVolume: (volume: number) => void
+  onMusic: (music: boolean) => void
+}) {
+  return (
+    <section className="inspector settings-panel">
+      <div className="inspector-header">
+        <div>
+          <h2>Audio</h2>
+          <span>Balance speech and music</span>
+        </div>
+      </div>
+      <label className="range-row">
+        <span>Speech volume</span>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          value={volume}
+          onChange={(event) => onVolume(Number(event.target.value))}
+        />
+        <output>{volume}%</output>
+      </label>
+      {!music ? (
+        <div className="empty-card">
+          <span className="round-icon">
+            <Icon name="music" />
+          </span>
+          <b>No background music</b>
+          <p>Add a track to give your short more energy.</p>
+          <button className="secondary" onClick={() => onMusic(true)}>
+            Add music
+          </button>
+        </div>
+      ) : (
+        <div className="music-card">
+          <span className="round-icon">
+            <Icon name="music" />
+          </span>
+          <div>
+            <b>Soft Focus</b>
+            <span>Demo music · 00:48</span>
+          </div>
+          <button
+            className="icon-btn"
+            onClick={() => onMusic(false)}
+            aria-label="Remove music"
+          >
+            <Icon name="close" />
+          </button>
+        </div>
+      )}
+      {music && (
+        <>
+          <label className="range-row">
+            <span>Music volume</span>
+            <input type="range" defaultValue="18" />
+            <output>18%</output>
+          </label>
+          <label className="toggle-row">
+            <span>Duck music under speech</span>
+            <input type="checkbox" defaultChecked />
+            <i />
+          </label>
+        </>
+      )}
+    </section>
+  )
+}
+
+function MediaPanel({
+  phase,
+  onUpload,
+}: {
+  phase: ProjectPhase
+  onUpload: (file: File) => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  return (
+    <section className="inspector settings-panel">
+      <div className="inspector-header">
+        <h2>Media</h2>
+      </div>
+      {phase === "ready" ? (
+        <div className="media-file">
+          <img src={mediaImage} alt="" />
+          <div>
+            <b>ai-tool-review.mp4</b>
+            <span>1920 × 1080 · 48 seconds</span>
+          </div>
+        </div>
+      ) : (
+        <div className="empty-card">
+          <span className="round-icon">
+            <Icon name="upload" />
+          </span>
+          <b>
+            {phase === "empty"
+              ? "Add your first clip"
+              : phase === "uploading"
+                ? "Uploading clip…"
+                : "Creating transcript…"}
+          </b>
+          <p>
+            {phase === "empty"
+              ? "Choose a video file to begin editing."
+              : "Demo processing state"}
+          </p>
+        </div>
+      )}
+      <input
+        ref={inputRef}
+        className="visually-hidden"
+        type="file"
+        accept="video/*"
+        onChange={(event) =>
+          event.target.files?.[0] && onUpload(event.target.files[0])
+        }
+      />
+      <button
+        className="secondary full"
+        onClick={() => inputRef.current?.click()}
+      >
+        <Icon name="upload" size={17} /> Select local video
+      </button>
+      <p className="helper">
+        Uploads in this prototype stay in your browser. The sample editor does
+        not render media.
+      </p>
+    </section>
+  )
+}
+
+export function FramingControls({
+  ratio,
+  onRatio,
+  guides,
+  onGuides,
+}: {
+  ratio: string
+  onRatio: (ratio: string) => void
+  guides: boolean
+  onGuides: (value: boolean) => void
+}) {
+  return (
+    <section className="inspector settings-panel">
+      <div className="inspector-header">
+        <h2>Framing</h2>
+      </div>
+      <fieldset>
+        <legend>Aspect ratio</legend>
+        <div className="ratio-grid">
+          {["Original", "16:9", "1:1", "9:16"].map((item) => (
+            <button
+              className={ratio === item ? "active" : ""}
+              onClick={() => onRatio(item)}
+              key={item}
+            >
+              <span
+                className={`ratio-shape shape-${item.replace(":", "-").toLowerCase()}`}
+              />
+              <b>{item}</b>
+            </button>
+          ))}
+        </div>
+      </fieldset>
+      <label className="range-row">
+        <span>Crop position</span>
+        <input type="range" defaultValue="50" />
+        <output>Center</output>
+      </label>
+      <label className="toggle-row">
+        <span>Show safe-area guides</span>
+        <input
+          type="checkbox"
+          checked={guides}
+          onChange={(event) => onGuides(event.target.checked)}
+        />
+        <i />
+      </label>
+    </section>
+  )
+}
+
+export function HistoryPanel({
+  removed,
+  onUndo,
+  onRedo,
+}: {
+  removed: boolean
+  onUndo: () => void
+  onRedo: () => void
+}) {
+  return (
+    <section className="inspector settings-panel">
+      <div className="inspector-header">
+        <div>
+          <h2>History</h2>
+          <span>{removed ? "3" : "2"} edits in this version</span>
+        </div>
+      </div>
+      <div className="history-actions">
+        <button onClick={onUndo}>
+          <Icon name="undo" />
+          Undo
+        </button>
+        <button onClick={onRedo}>
+          <Icon name="redo" />
+          Redo
+        </button>
+      </div>
+      <div className="history-list">
+        {removed && (
+          <article className="current">
+            <i />
+            <div>
+              <b>Trimmed introduction</b>
+              <span>Just now · current</span>
+            </div>
+          </article>
+        )}
+        <article>
+          <i />
+          <div>
+            <b>Caption highlight applied</b>
+            <span>2 minutes ago</span>
+          </div>
+        </article>
+        <article>
+          <i />
+          <div>
+            <b>Project created</b>
+            <span>5 minutes ago</span>
+          </div>
+        </article>
+      </div>
+    </section>
+  )
+}
+
+export function Timeline({
+  currentTime,
+  zoom,
+  onSeek,
+  onZoom,
+}: {
+  currentTime: number
+  zoom: number
+  onSeek: (time: number) => void
+  onZoom: (zoom: number) => void
+}) {
+  const ticks = [0, 10, 20, 30, 40]
+  const [snapping, setSnapping] = useState(true)
+  const [splitAt, setSplitAt] = useState<number | null>(null)
+  return (
+    <section className="timeline">
+      <div className="timeline-toolbar">
+        <b>
+          <Icon name="document" size={17} />
+          Timeline
+        </b>
+        <button
+          className="desktop-only"
+          onClick={() => setSnapping((value) => !value)}
+          aria-pressed={snapping}
+        >
+          Snapping <i className={`tiny-toggle ${snapping ? "on" : ""}`} />
+        </button>
+        <button
+          className="desktop-only"
+          onClick={() => setSplitAt(currentTime)}
+        >
+          <Icon name="scissors" size={16} />{" "}
+          {splitAt === null ? "Split" : `Split at ${formatTime(splitAt)}`}
+        </button>
+        <label>
+          <span className="desktop-only">Zoom</span>
+          <input
+            aria-label="Timeline zoom"
+            type="range"
+            min="1"
+            max="2.5"
+            step=".1"
+            value={zoom}
+            onChange={(event) => onZoom(Number(event.target.value))}
+          />
+        </label>
+        <span className="timeline-meta">
+          48s duration&nbsp;&nbsp;|&nbsp;&nbsp;3 edits
+        </span>
+      </div>
+      <div className="timeline-scroll">
+        <div
+          className="timeline-content"
+          style={{ "--timeline-zoom": zoom } as React.CSSProperties}
+        >
+          <div className="ruler">
+            {ticks.map((tick) => (
+              <span key={tick} style={{ left: `${(tick / duration) * 100}%` }}>
+                {formatTime(tick)}
+              </span>
             ))}
+          </div>
+          <button
+            className="timeline-seek"
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect()
+              onSeek(((event.clientX - rect.left) / rect.width) * duration)
+            }}
+            aria-label="Seek timeline"
+          />
+          <div
+            className="playhead"
+            style={{ left: `${(currentTime / duration) * 100}%` }}
+          >
+            <span>{formatTime(currentTime)}</span>
+          </div>
+          {splitAt !== null && (
+            <i
+              className="split-marker"
+              style={{ left: `${(splitAt / duration) * 100}%` }}
+            />
+          )}
+          <div className="track video-track">
+            <label>
+              <Icon name="document" size={17} />
+              Video
+            </label>
+            <div className="clip selected">
+              {[0, 1, 2, 3, 4, 5].map((n) => (
+                <img
+                  key={n}
+                  src={mediaImage}
+                  alt=""
+                  style={{ objectPosition: `${20 + n * 12}% 42%` }}
+                />
+              ))}
+            </div>
+          </div>
+          <div className="track caption-track">
+            <label>
+              <Icon name="captions" size={17} />
+              Captions
+            </label>
+            <div className="caption-clips">
+              {sentences.slice(1, 5).map((sentence) => (
+                <span key={sentence.id}>{sentence.text}</span>
+              ))}
+            </div>
+          </div>
+          <div className="track audio-track">
+            <label>
+              <Icon name="wave" size={17} />
+              Audio
+            </label>
+            <div className="waveform">
+              {Array.from({ length: 120 }, (_, n) => (
+                <i key={n} style={{ height: `${20 + ((n * 17) % 65)}%` }} />
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </section>
-  );
+  )
+}
+
+export function VoiceDock({
+  state,
+  onState,
+}: {
+  state: VoiceState
+  onState: (state: VoiceState) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const isError = state === "Permission error" || state === "Connection error"
+  const active = state !== "Disconnected" && !isError
+  const toggle = () => {
+    if (active || isError) onState("Disconnected")
+    else {
+      onState("Connecting")
+      demoServices.after(700, () => onState("Listening"))
+    }
+  }
+  const instruction = isError
+    ? state === "Permission error"
+      ? "Demo microphone access was declined."
+      : "Demo voice service could not connect."
+    : active
+      ? "Keep the example, shorten the intro."
+      : "Tap to simulate voice editing"
+  return (
+    <section
+      className={`voice-dock ${active ? "active" : ""} ${isError ? "voice-error" : ""}`}
+    >
+      {expanded && (
+        <div className="voice-history">
+          <b>Recent demo conversation</b>
+          <p><span>You</span> Keep the example, shorten the intro.</p>
+          <p><span>Cutback</span> I prepared a 4.2 second trim for review.</p>
+        </div>
+      )}
+      <button
+        className="mic-button"
+        onClick={toggle}
+        aria-label={active ? "Disconnect demo voice" : "Connect demo voice"}
+      >
+        <Icon name="mic" size={28} />
+      </button>
+      <div className="voice-wave">
+        {[4, 8, 13, 20, 11, 17, 7, 14, 5].map((height, index) => (
+          <i key={index} style={{ height }} />
+        ))}
+      </div>
+      <button
+        className="voice-copy"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
+      >
+        <b>
+          {isError
+            ? state
+            : state === "Disconnected"
+            ? "Tell Cutback what to change"
+            : `${state}…`}{" "}
+          <span>Demo</span>
+        </b>
+        <p>{instruction}</p>
+      </button>
+      {active && (
+        <button className="stop-button" onClick={() => onState("Disconnected")}>
+          <i /> <span className="desktop-only">Stop</span>
+        </button>
+      )}
+    </section>
+  )
+}
+
+export function ExportDialog({
+  state,
+  onState,
+  onClose,
+}: {
+  state: ExportState
+  onState: (state: ExportState) => void
+  onClose: () => void
+}) {
+  const begin = () => {
+    onState("processing")
+    demoServices.after(1600, () => onState("complete"))
+  }
+  return (
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
+    >
+      <section
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="export-title"
+      >
+        <button
+          className="modal-close icon-btn"
+          onClick={onClose}
+          aria-label="Close export"
+        >
+          <Icon name="close" />
+        </button>
+        {state === "options" && (
+          <>
+            <span className="modal-icon">
+              <Icon name="upload" />
+            </span>
+            <h2 id="export-title">Export your video</h2>
+            <p>This demo simulates rendering and does not create an MP4.</p>
+            <label>
+              Format
+              <select>
+                <option>MP4 · H.264</option>
+                <option>WebM</option>
+              </select>
+            </label>
+            <label>
+              Quality
+              <select>
+                <option>1080p · Recommended</option>
+                <option>720p</option>
+              </select>
+            </label>
+            <button className="primary full" onClick={begin}>
+              Start demo export
+            </button>
+          </>
+        )}
+        {state === "processing" && (
+          <div className="center-state">
+            <span className="spinner" />
+            <h2 id="export-title">Preparing preview</h2>
+            <p>Simulating captions and edits…</p>
+            <div className="progress">
+              <i />
+            </div>
+            <button className="secondary" onClick={() => onState("error")}>
+              Show error example
+            </button>
+          </div>
+        )}
+        {state === "complete" && (
+          <div className="center-state">
+            <span className="modal-icon success">
+              <Icon name="check" />
+            </span>
+            <h2 id="export-title">Demo export complete</h2>
+            <p>
+              No file was produced. Connect the real renderer through the typed
+              onExport callback.
+            </p>
+            <button className="primary full" onClick={onClose}>
+              Done
+            </button>
+          </div>
+        )}
+        {state === "error" && (
+          <div className="center-state">
+            <span className="modal-icon error">
+              <Icon name="alert" />
+            </span>
+            <h2 id="export-title">Export could not finish</h2>
+            <p>This is a demo error state. Your edits are safe.</p>
+            <button className="primary full" onClick={begin}>
+              Retry demo export
+            </button>
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
+
+function DemoMenu({
+  phase,
+  voice,
+  onPhase,
+  onVoice,
+  onClose,
+}: {
+  phase: ProjectPhase
+  voice: VoiceState
+  onPhase: (phase: ProjectPhase) => void
+  onVoice: (voice: VoiceState) => void
+  onClose: () => void
+}) {
+  return (
+    <div className="demo-menu">
+      <div className="demo-menu-head">
+        <b>Demo states</b>
+        <button className="icon-btn" onClick={onClose}>
+          <Icon name="close" />
+        </button>
+      </div>
+      <label>
+        Project
+        <select
+          value={phase}
+          onChange={(event) => onPhase(event.target.value as ProjectPhase)}
+        >
+          <option value="ready">Ready</option>
+          <option value="empty">Empty</option>
+          <option value="uploading">Uploading</option>
+          <option value="transcribing">Transcribing</option>
+        </select>
+      </label>
+      <label>
+        Voice
+        <select
+          value={voice}
+          onChange={(event) => onVoice(event.target.value as VoiceState)}
+        >
+          {[
+            "Disconnected",
+            "Connecting",
+            "Listening",
+            "Thinking",
+            "Speaking",
+            "Applying edit",
+            "Permission error",
+            "Connection error",
+          ].map((item) => (
+            <option key={item}>{item}</option>
+          ))}
+        </select>
+      </label>
+      <p>
+        Prototype controls only. No microphone or backend connection is used.
+      </p>
+    </div>
+  )
+}
+
+function MoreSheet({
+  onTool,
+  onClose,
+}: {
+  onTool: (tool: Tool) => void
+  onClose: () => void
+}) {
+  return (
+    <div className="sheet-backdrop" onClick={onClose}>
+      <div className="more-sheet" onClick={(event) => event.stopPropagation()}>
+        <i className="sheet-handle" />
+        <h2>More tools</h2>
+        {[
+          ["Media", "media", "folder"],
+          ["Framing", "framing", "crop"],
+          ["History", "history", "history"],
+          ["Demo states", "transcript", "more"],
+        ].map(([label, tool, icon]) => (
+          <button
+            key={label}
+            onClick={() => {
+              onTool(tool as Tool)
+              onClose()
+            }}
+          >
+            <Icon name={icon} />
+            <span>{label}</span>
+            <Icon name="back" />
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export function EditorShell({ callbacks = {} }: { callbacks?: EditorCallbacks }) {
+  const [activeTool, setActiveTool] = useState<Tool>("transcript")
+  const [mobileTab, setMobileTab] = useState<"edit" | "captions" | "audio">(
+    "edit",
+  )
+  const [currentTime, setCurrentTime] = useState(12)
+  const [playing, setPlaying] = useState(false)
+  const [removed, setRemoved] = useState(false)
+  const [redoAvailable, setRedoAvailable] = useState(false)
+  const [proposalState, setProposalState] =
+    useState<"pending" | "applying" | "applied" | "dismissed">("pending")
+  const [captionStyle, setCaptionStyle] = useState<CaptionStyle>("highlight")
+  const [captionSize, setCaptionSize] = useState(32)
+  const [captionPosition, setCaptionPosition] = useState("Bottom")
+  const [safe, setSafe] = useState(true)
+  const [ratio, setRatio] = useState("16:9")
+  const [guides, setGuides] = useState(false)
+  const [volume, setVolume] = useState(84)
+  const [music, setMusic] = useState(false)
+  const [voice, setVoice] = useState<VoiceState>("Listening")
+  const [zoom, setZoom] = useState(1)
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportState, setExportState] = useState<ExportState>("options")
+  const [moreOpen, setMoreOpen] = useState(false)
+  const [demoOpen, setDemoOpen] = useState(false)
+  const [phase, setPhase] = useState<ProjectPhase>("ready")
+  const [previewMode, setPreviewMode] = useState<"original" | "edited">("edited")
+
+  useEffect(() => {
+    if (!playing) return
+    const timer = window.setInterval(
+      () =>
+        setCurrentTime((time) =>
+          time >= duration ? 0 : Math.min(duration, time + 0.1),
+        ),
+      100,
+    )
+    return () => window.clearInterval(timer)
+  }, [playing])
+
+  const seek = (time: number) => {
+    setCurrentTime(time)
+    callbacks.onSeek?.(time)
+  }
+  const apply = () => {
+    setProposalState("applying")
+    setVoice("Applying edit")
+    demoServices.after(900, () => {
+      setRemoved(true)
+      setProposalState("applied")
+      setVoice("Listening")
+      setRedoAvailable(false)
+      callbacks.onApplyEdit?.(0)
+    })
+  }
+  const undo = () => {
+    if (removed) {
+      setRemoved(false)
+      setProposalState("pending")
+      setRedoAvailable(true)
+    }
+    callbacks.onUndo?.()
+  }
+  const redo = () => {
+    if (redoAvailable) {
+      setRemoved(true)
+      setProposalState("applied")
+      setRedoAvailable(false)
+    }
+    callbacks.onRedo?.()
+  }
+  const changeTool = (tool: Tool) => {
+    setActiveTool(tool)
+    if (tool === "transcript") setMobileTab("edit")
+    if (tool === "captions") setMobileTab("captions")
+    if (tool === "audio") setMobileTab("audio")
+  }
+  const upload = (file: File) => {
+    callbacks.onUpload?.(file)
+    setPhase("uploading")
+    demoServices.after(900, () => setPhase("transcribing"))
+    demoServices.after(1900, () => setPhase("ready"))
+  }
+
+  const inspector = useMemo(() => {
+    if (activeTool === "captions")
+      return (
+        <CaptionInspector
+          style={captionStyle}
+          size={captionSize}
+          position={captionPosition}
+          safe={safe}
+          onStyle={(value) => {
+            setCaptionStyle(value)
+            callbacks.onCaptionChange?.(value)
+          }}
+          onSize={setCaptionSize}
+          onPosition={setCaptionPosition}
+          onSafe={setSafe}
+        />
+      )
+    if (activeTool === "audio")
+      return (
+        <AudioInspector
+          volume={volume}
+          music={music}
+          onVolume={(value) => {
+            setVolume(value)
+            callbacks.onAudioChange?.(value)
+          }}
+          onMusic={setMusic}
+        />
+      )
+    if (activeTool === "media")
+      return <MediaPanel phase={phase} onUpload={upload} />
+    if (activeTool === "framing")
+      return (
+        <FramingControls
+          ratio={ratio}
+          onRatio={(value) => {
+            setRatio(value)
+            callbacks.onFramingChange?.(value)
+          }}
+          guides={guides}
+          onGuides={setGuides}
+        />
+      )
+    if (activeTool === "history")
+      return <HistoryPanel removed={removed} onUndo={undo} onRedo={redo} />
+    return (
+      <TranscriptPanel
+        currentTime={currentTime}
+        removed={removed}
+        proposalState={proposalState}
+        onSeek={seek}
+        onPropose={(id) => {
+          setProposalState("pending")
+          callbacks.onProposeEdit?.(id)
+        }}
+        onPreview={() => {
+          seek(0)
+          setPlaying(true)
+        }}
+        onApply={apply}
+        onDismiss={() => setProposalState("dismissed")}
+        onUndo={undo}
+        onRedo={redo}
+      />
+    )
+  }, [
+    activeTool,
+    captionStyle,
+    captionSize,
+    captionPosition,
+    safe,
+    volume,
+    music,
+    phase,
+    ratio,
+    guides,
+    removed,
+    redoAvailable,
+    currentTime,
+    proposalState,
+  ])
+
+  return (
+    <main className="app-shell">
+      <EditorHeader
+        onExport={() => {
+          setExportState("options")
+          setExportOpen(true)
+        }}
+        onUndo={undo}
+        onRedo={redo}
+        canRedo={redoAvailable}
+        onMore={() => setMoreOpen(true)}
+      />
+      <ToolNavigation active={activeTool} onChange={changeTool} />
+      <div className="workspace">
+        <div className="preview-column">
+          <VideoPreview
+            currentTime={currentTime}
+            playing={playing}
+            ratio={ratio}
+            captionStyle={captionStyle}
+            captionSize={captionSize}
+            captionPosition={captionPosition}
+            showGuides={guides}
+            mode={previewMode}
+            onPlay={() => setPlaying((value) => !value)}
+            onSeek={seek}
+            onRatio={(value) => {
+              setRatio(value)
+              callbacks.onFramingChange?.(value)
+            }}
+            onMode={setPreviewMode}
+          />
+          <div className="mobile-tabs mobile-only" role="tablist">
+            {(["edit", "captions", "audio"] as const).map((tab) => (
+              <button
+                role="tab"
+                aria-selected={mobileTab === tab}
+                className={mobileTab === tab ? "active" : ""}
+                key={tab}
+                onClick={() => {
+                  setMobileTab(tab)
+                  changeTool(tab === "edit" ? "transcript" : tab)
+                }}
+              >
+                {tab[0].toUpperCase() + tab.slice(1)}
+              </button>
+            ))}
+          </div>
+          <div className="mobile-tool-panel mobile-only">{inspector}</div>
+          <VoiceDock
+            state={voice}
+            onState={(value) => {
+              setVoice(value)
+              value === "Disconnected"
+                ? callbacks.onVoiceDisconnect?.()
+                : callbacks.onVoiceConnect?.()
+            }}
+          />
+        </div>
+        <aside className="desktop-inspector desktop-only">{inspector}</aside>
+      </div>
+      <Timeline
+        currentTime={currentTime}
+        zoom={zoom}
+        onSeek={seek}
+        onZoom={setZoom}
+      />
+      <button
+        className="demo-trigger desktop-only"
+        onClick={() => setDemoOpen((value) => !value)}
+      >
+        Demo states
+      </button>
+      {demoOpen && (
+        <DemoMenu
+          phase={phase}
+          voice={voice}
+          onPhase={setPhase}
+          onVoice={setVoice}
+          onClose={() => setDemoOpen(false)}
+        />
+      )}
+      {moreOpen && (
+        <MoreSheet
+          onTool={(tool) => {
+            if (tool === "transcript") setDemoOpen(true)
+            else changeTool(tool)
+          }}
+          onClose={() => setMoreOpen(false)}
+        />
+      )}
+      {exportOpen && (
+        <ExportDialog
+          state={exportState}
+          onState={(state) => {
+            setExportState(state)
+            if (state === "processing") callbacks.onExport?.("mp4")
+          }}
+          onClose={() => setExportOpen(false)}
+        />
+      )}
+    </main>
+  )
+}
+
+export default function App() {
+  return <EditorShell />
 }
