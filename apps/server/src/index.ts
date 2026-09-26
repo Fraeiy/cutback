@@ -108,7 +108,14 @@ await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 }
 
 app.get("/api/health", async () => {
   const ffmpeg = await runProcess(ffmpegBin(), ["-version"]);
-  const ffprobe = process.env.VERCEL ? ffmpeg : await runProcess(ffprobeBin(), ["-version"]);
+  let ffprobe = ffmpeg;
+  if (!process.env.VERCEL) {
+    try {
+      ffprobe = await runProcess(ffprobeBin(), ["-version"]);
+    } catch {
+      // probeMedia falls back to the bundled FFmpeg binary.
+    }
+  }
   return {
     ok: ffmpeg.code === 0 && ffprobe.code === 0,
     ffmpeg: ffmpeg.code === 0,
@@ -167,6 +174,19 @@ app.get("/api/projects/:id", async (request, reply) => {
   } catch {
     return reply.code(404).send({ error: "Project not found." });
   }
+});
+
+app.patch("/api/projects/:id", async (request) => {
+  const id = assertId((request.params as { id: string }).id);
+  const body = (request.body ?? {}) as { title?: string };
+  return withProjectLock(id, async () => {
+    const project = await loadProject(id);
+    const title = String(body.title || "").trim().slice(0, 120);
+    if (title) project.title = title;
+    project.updatedAt = new Date().toISOString();
+    await saveProject(project);
+    return sendProject(project);
+  });
 });
 
 app.post("/api/projects/:id/uploads", async (request, reply) => {
@@ -558,6 +578,34 @@ app.post("/api/projects/:id/tools/:name", async (request, reply) => {
     const message = error instanceof Error ? error.message : "Tool failed.";
     return reply.code(400).send({ error: message });
   }
+});
+
+app.get("/api/projects/:id/waveform", async (request, reply) => {
+  const id = assertId((request.params as { id: string }).id);
+  const project = await loadProject(id);
+  if (!project.media) return reply.code(404).send({ error: "Upload a video first." });
+  if (!project.media.hasAudio) return { peaks: [] };
+  const filePath = await materializeProjectFile(id, project.media.storedName);
+  const result = await runProcess(ffmpegBin(), [
+    "-hide_banner",
+    "-i", filePath,
+    "-vn",
+    "-filter_complex", "ebur128=peak=true",
+    "-f", "null",
+    "-",
+  ]);
+  const values = [...result.stderr.matchAll(/\bM:\s*(-?\d+(?:\.\d+)?)/g)]
+    .map((match) => Number(match[1]))
+    .filter(Number.isFinite);
+  if (!values.length) return { peaks: [] };
+  const target = 120;
+  const peaks = Array.from({ length: target }, (_, index) => {
+    const start = Math.floor(index * values.length / target);
+    const end = Math.max(start + 1, Math.floor((index + 1) * values.length / target));
+    const loudness = Math.max(...values.slice(start, end));
+    return Math.max(0.08, Math.min(1, (loudness + 60) / 54));
+  });
+  return { peaks };
 });
 
 app.get("/api/projects/:id/media", async (request, reply) => {

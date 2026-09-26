@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { buildExportArgs, type ResolvedSegment } from "../../../packages/timeline/src/index.js";
-import { ffmpegBin, ffprobeBin, findFont, runProcess } from "../src/ffmpeg.js";
+import { ffmpegBin, findFont, probeMedia, runProcess } from "../src/ffmpeg.js";
 
 function runBinary(bin: string, args: string[]): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -90,10 +90,7 @@ test("exported mp4 drops the middle and keeps start and end in sync", { timeout:
     );
     assert.equal(rendered.code, 0, rendered.stderr.slice(-800));
 
-    const probe = await runProcess(ffprobeBin(), [
-      "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", output,
-    ]);
-    const duration = Number(probe.stdout.trim());
+    const duration = (await probeMedia(output)).durationMs / 1000;
     assert.ok(Math.abs(duration - 4) < 0.25, `expected about 4s, got ${duration}`);
 
     const colors = await Promise.all([0.4, 2.4].map((ss) => readColor(output, ss)));

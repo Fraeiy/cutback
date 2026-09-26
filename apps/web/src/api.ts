@@ -79,6 +79,14 @@ export const api = {
     ),
   demo: () => fetch("/api/projects/demo", { method: "POST", headers: headers() }).then((response) => parse<PresentedProject>(response)),
   get: (id: string) => fetch(`/api/projects/${id}`, { headers: headers() }).then((response) => parse<PresentedProject>(response)),
+  rename: (id: string, title: string) =>
+    fetch(`/api/projects/${id}`, {
+      method: "PATCH",
+      headers: headers(true),
+      body: JSON.stringify({ title }),
+    }).then((response) => parse<PresentedProject>(response)),
+  waveform: (id: string) =>
+    fetch(`/api/projects/${id}/waveform`, { headers: headers() }).then((response) => parse<{ peaks: number[] }>(response)),
   upload: async (id: string, file: File) => {
     const cloud = await cloudUpload(id, file, "media");
     if (cloud) return cloud;

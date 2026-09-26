@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url);
 const ffmpegStatic = require("ffmpeg-static") as string | null;
 
 export function ffmpegBin(): string {
-  return process.env.FFMPEG_PATH || (process.env.VERCEL ? ffmpegStatic || "ffmpeg" : "ffmpeg");
+  return process.env.FFMPEG_PATH || ffmpegStatic || "ffmpeg";
 }
 
 export function ffprobeBin(): string {
@@ -49,31 +49,38 @@ export interface Probe {
   hasAudio: boolean;
 }
 
+async function probeWithFfmpeg(filePath: string): Promise<Probe> {
+  const result = await runProcess(ffmpegBin(), ["-hide_banner", "-i", filePath]);
+  const duration = /Duration:\s*(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)/.exec(result.stderr);
+  const video = /Video:[^\r\n]*?\b(\d{2,5})x(\d{2,5})\b/.exec(result.stderr);
+  if (!duration || !video) throw new Error("Could not read the video duration and dimensions.");
+  const durationSec = Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3]);
+  return {
+    durationMs: Math.round(durationSec * 1000),
+    width: Number(video[1]),
+    height: Number(video[2]),
+    hasAudio: /Audio:[^\r\n]+/.test(result.stderr),
+  };
+}
+
 export async function probeMedia(filePath: string): Promise<Probe> {
-  if (process.env.VERCEL) {
-    const result = await runProcess(ffmpegBin(), ["-hide_banner", "-i", filePath]);
-    const duration = /Duration:\s*(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)/.exec(result.stderr);
-    const video = /Video:[^\r\n]*?\b(\d{2,5})x(\d{2,5})\b/.exec(result.stderr);
-    if (!duration || !video) throw new Error("Could not read the video duration and dimensions.");
-    const durationSec = Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3]);
-    return {
-      durationMs: Math.round(durationSec * 1000),
-      width: Number(video[1]),
-      height: Number(video[2]),
-      hasAudio: /Audio:[^\r\n]+/.test(result.stderr),
-    };
+  if (process.env.VERCEL) return probeWithFfmpeg(filePath);
+  let result;
+  try {
+    result = await runProcess(ffprobeBin(), [
+      "-v",
+      "error",
+      "-print_format",
+      "json",
+      "-show_format",
+      "-show_streams",
+      filePath,
+    ]);
+  } catch {
+    return probeWithFfmpeg(filePath);
   }
-  const result = await runProcess(ffprobeBin(), [
-    "-v",
-    "error",
-    "-print_format",
-    "json",
-    "-show_format",
-    "-show_streams",
-    filePath,
-  ]);
   if (result.code !== 0) {
-    throw new Error(result.stderr.trim() || "ffprobe failed");
+    return probeWithFfmpeg(filePath);
   }
   const parsed = JSON.parse(result.stdout) as {
     format?: { duration?: string };

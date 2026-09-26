@@ -1,19 +1,38 @@
-import { useEffect, useMemo, useRef, useState } from "react"
-import { demoServices } from "./editor/demoServices"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import type { PresentedProject, Proposal, ResolvedSegment } from "@cutback/timeline"
+import { api, type Health } from "./api"
+import { VoiceSession, type VoicePhase } from "./voice"
 import {
-  PROJECT_DURATION as duration,
   PROJECT_MEDIA as mediaImage,
-  SAMPLE_TRANSCRIPT as sentences,
   TOOL_LABELS as toolLabels,
 } from "./editor/fixtures"
 import type {
   CaptionStyle,
-  EditorCallbacks,
   ExportState,
   ProjectPhase,
   Tool,
   VoiceState,
 } from "./editor/types"
+
+const PROJECT_KEY = "cutback.projectId"
+
+const TEXT_COLORS: Record<string, string> = {
+  white: "#FFFFFF",
+  slate: "#9CA3AF",
+  black: "#353A3F",
+  cream: "#EEE3D2",
+  pink: "#F093BD",
+  blue: "#82BDF2",
+}
+
+const HIGHLIGHT_COLORS: Record<string, string> = {
+  mint: "#B6F2C8",
+  yellow: "#F3CE62",
+  orange: "#EE9A42",
+  rose: "#EA7B9E",
+  violet: "#A98BE7",
+  blue: "#82BDF2",
+}
 
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
   const paths: Record<string, React.ReactNode> = {
@@ -139,7 +158,22 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
 }
 
 function formatTime(value: number) {
-  return `00:${Math.round(value).toString().padStart(2, "0")}`
+  const seconds = Math.max(0, Math.round(value))
+  return `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${(seconds % 60).toString().padStart(2, "0")}`
+}
+
+function ratioFromProject(project: PresentedProject | null): string {
+  const mode = project?.edit.framing.mode
+  return mode === "wide" ? "16:9" : mode === "square" ? "1:1" : mode === "vertical" ? "9:16" : "Original"
+}
+
+function modeFromRatio(ratio: string): "original" | "wide" | "square" | "vertical" {
+  return ratio === "16:9" ? "wide" : ratio === "1:1" ? "square" : ratio === "9:16" ? "vertical" : "original"
+}
+
+function sourceToOutput(segments: ResolvedSegment[], sourceMs: number): number | null {
+  const segment = segments.find((item) => sourceMs >= item.sourceStartMs && sourceMs <= item.sourceEndMs)
+  return segment ? segment.outputStartMs + sourceMs - segment.sourceStartMs : null
 }
 
 function Brand() {
@@ -155,19 +189,26 @@ function Brand() {
 }
 
 export function EditorHeader({
+  title,
+  saveStatus,
   onExport,
+  onTitle,
   onUndo,
   onRedo,
+  canUndo,
   canRedo,
   onMore,
 }: {
+  title: string
+  saveStatus: string
   onExport: () => void
+  onTitle: (title: string) => void
   onUndo: () => void
   onRedo: () => void
+  canUndo: boolean
   canRedo: boolean
   onMore: () => void
 }) {
-  const [title, setTitle] = useState("My AI tool review")
   return (
     <header className="editor-header">
       <div className="desktop-only header-left">
@@ -178,12 +219,12 @@ export function EditorHeader({
           <input
             aria-label="Project title"
             value={title}
-            onChange={(event) => setTitle(event.target.value)}
+            onChange={(event) => onTitle(event.target.value)}
           />
         </label>
         <span className="saved">
           <i />
-          Saved
+          {saveStatus}
         </span>
         
       </div>
@@ -196,12 +237,13 @@ export function EditorHeader({
           <Icon name="back" />
         </button>
         <Brand />
-        <b className="mobile-project">AI tool review</b>
+        <b className="mobile-project">{title}</b>
       </div>
       <div className="header-actions">
         <button
           className="icon-btn desktop-only"
           onClick={onUndo}
+          disabled={!canUndo}
           aria-label="Undo"
         >
           <Icon name="undo" />
@@ -254,6 +296,7 @@ export function ToolNavigation({
 
 export function PlaybackControls({
   currentTime,
+  duration,
   playing,
   muted,
   onPlay,
@@ -262,6 +305,7 @@ export function PlaybackControls({
   onFullscreen,
 }: {
   currentTime: number
+  duration: number
   playing: boolean
   muted: boolean
   onPlay: () => void
@@ -278,18 +322,18 @@ export function PlaybackControls({
       >
         <Icon name={playing ? "pause" : "play"} size={22} />
       </button>
-      <span className="time">{formatTime(currentTime)} / 00:48</span>
+      <span className="time">{formatTime(currentTime)} / {formatTime(duration)}</span>
       <input
         aria-label="Playback position"
         type="range"
         min="0"
-        max={duration}
+        max={Math.max(duration, 0.1)}
         step=".1"
         value={currentTime}
         onChange={(event) => onSeek(Number(event.target.value))}
         style={
           {
-            "--progress": `${(currentTime / duration) * 100}%`,
+            "--progress": `${duration > 0 ? (currentTime / duration) * 100 : 0}%`,
           } as React.CSSProperties
         }
       />
@@ -312,6 +356,7 @@ export function PlaybackControls({
 }
 
 export function VideoPreview({
+  project,
   currentTime,
   playing,
   ratio,
@@ -324,8 +369,11 @@ export function VideoPreview({
   onSeek,
   onRatio,
   onMode,
+  onVideoReady,
+  onVideoTimeUpdate,
   mediaSrc,
 }: {
+  project: PresentedProject | null
   currentTime: number
   playing: boolean
   ratio: string
@@ -338,6 +386,8 @@ export function VideoPreview({
   onSeek: (value: number) => void
   onRatio: (ratio: string) => void
   onMode: (mode: "original" | "edited") => void
+  onVideoReady: (video: HTMLVideoElement | null) => void
+  onVideoTimeUpdate: (video: HTMLVideoElement) => void
   mediaSrc?: string | null
 }) {
   const stageRef = useRef<HTMLDivElement>(null)
@@ -350,12 +400,15 @@ export function VideoPreview({
     video.muted = muted
     if (playing) void video.play().catch(() => undefined)
     else video.pause()
-    video.currentTime = currentTime
-  }, [currentTime, mediaSrc, muted, playing])
-  const active =
-    [...sentences]
-      .reverse()
-      .find((sentence) => currentTime >= sentence.start) || sentences[0]
+  }, [mediaSrc, muted, playing])
+  useEffect(() => {
+    onVideoReady(videoRef.current)
+    return () => onVideoReady(null)
+  }, [onVideoReady])
+  const activeCue = project?.cues.find(
+    (cue) => currentTime * 1000 >= cue.outputStartMs && currentTime * 1000 <= cue.outputEndMs,
+  )
+  const framing = project?.edit.framing
   return (
     <section className="preview-panel">
       <div className="preview-toolbar desktop-only">
@@ -366,24 +419,24 @@ export function VideoPreview({
               className={mode === "original" ? "active" : ""}
               onClick={() => onMode("original")}
             >
-              Original
+              Before
             </button>
             <button
               className={mode === "edited" ? "active" : ""}
               onClick={() => onMode("edited")}
             >
-              Edited
+              After
             </button>
           </div>
           <select
-            aria-label="Aspect ratio"
+            aria-label="Frame aspect ratio"
             value={ratio}
             onChange={(event) => onRatio(event.target.value)}
           >
-            <option>16:9</option>
-            <option>Original</option>
-            <option>1:1</option>
-            <option>9:16</option>
+            <option value="16:9">Frame: 16:9</option>
+            <option value="Original">Frame: Original</option>
+            <option value="1:1">Frame: 1:1</option>
+            <option value="9:16">Frame: 9:16</option>
           </select>
         </div>
       </div>
@@ -397,7 +450,13 @@ export function VideoPreview({
             src={mediaSrc}
             muted={muted}
             playsInline
-            onTimeUpdate={(event) => onSeek(event.currentTarget.currentTime)}
+            onTimeUpdate={(event) => onVideoTimeUpdate(event.currentTarget)}
+            onPlay={() => undefined}
+            onPause={() => undefined}
+            style={{
+              objectFit: framing?.mode && framing.mode !== "original" ? "cover" : "contain",
+              objectPosition: `${(framing?.focus ?? 0.5) * 100}% ${(framing?.focusY ?? 0.5) * 100}%`,
+            }}
             aria-label="Uploaded video preview"
           />
         ) : (
@@ -407,19 +466,20 @@ export function VideoPreview({
           />
         )}
         {showGuides && <div className="safe-guides" />}
-        {mode === "edited" && (
+        {mode === "edited" && project?.edit.captions.enabled && activeCue && (
           <div
             className={`caption caption-${captionStyle} position-${captionPosition.toLowerCase()}`}
             style={
               { "--caption-size": `${captionSize}px` } as React.CSSProperties
             }
           >
-            {active.text}
+            {activeCue.text}
           </div>
         )}
       </div>
       <PlaybackControls
         currentTime={currentTime}
+        duration={((mode === "original" ? project?.media?.durationMs : project?.outputDurationMs) ?? 0) / 1000}
         playing={playing}
         muted={muted}
         onPlay={onPlay}
@@ -432,26 +492,26 @@ export function VideoPreview({
 }
 
 export function EditProposal({
+  proposal,
   state,
   onPreview,
   onApply,
   onDismiss,
 }: {
+  proposal: Proposal | null
   state: "pending" | "applying" | "applied" | "dismissed"
   onPreview: () => void
   onApply: () => void
   onDismiss: () => void
 }) {
-  if (state === "dismissed") return null
+  if (!proposal || state === "dismissed") return null
   return (
     <div className={`proposal ${state}`}>
       <span className="proposal-icon">
         <Icon name={state === "applied" ? "check" : "scissors"} />
       </span>
       <div>
-        <b>
-          {state === "applied" ? "Introduction trimmed" : "Trim introduction"}
-        </b>
+        <b>{proposal.summary}</b>
         <span>
           {state === "applying"
             ? "Applying edit…"
@@ -477,28 +537,34 @@ export function EditProposal({
 
 function MobileTimeline({
   currentTime,
+  duration,
+  thumbnails,
+  waveform,
   onSeek,
 }: {
   currentTime: number
+  duration: number
+  thumbnails: string[]
+  waveform: number[]
   onSeek: (time: number) => void
 }) {
   return (
     <div className="mobile-mini-timeline mobile-only">
       <div className="mini-ruler">
-        {[0, 10, 20, 30, 40].map((tick) => (
-          <span key={tick}>{formatTime(tick)}</span>
+        {[0, .25, .5, .75, 1].map((ratio) => (
+          <span key={ratio}>{formatTime(duration * ratio)}</span>
         ))}
       </div>
       <div className="mini-strip">
-        {[0, 1, 2, 3, 4].map((frame) => (
+        {thumbnails.map((thumbnail, frame) => (
           <img
-            src={mediaImage}
+            src={thumbnail}
             alt=""
             key={frame}
             style={{ objectPosition: `${18 + frame * 16}% 44%` }}
           />
         ))}
-        <i style={{ left: `${(currentTime / duration) * 100}%` }} />
+        <i style={{ left: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }} />
         <button
           aria-label="Seek compact timeline"
           onClick={(event) => {
@@ -508,10 +574,10 @@ function MobileTimeline({
         />
       </div>
       <div className="mini-waveform">
-        {Array.from({ length: 54 }, (_, index) => (
+        {(waveform.length ? waveform.slice(0, 54) : Array.from({ length: 54 }, () => 0.18)).map((peak, index) => (
           <i
             key={index}
-            style={{ height: `${22 + ((index * 19) % 70)}%` }}
+            style={{ height: `${Math.max(12, peak * 100)}%` }}
           />
         ))}
       </div>
@@ -520,10 +586,17 @@ function MobileTimeline({
 }
 
 export function TranscriptPanel({
+  project,
+  activeSentenceId,
+  selectedSentenceId,
   currentTime,
-  removed,
+  duration,
+  thumbnails,
+  waveform,
   proposalState,
+  proposal,
   onSeek,
+  onSelect,
   onPropose,
   onPreview,
   onApply,
@@ -531,11 +604,18 @@ export function TranscriptPanel({
   onUndo,
   onRedo,
 }: {
+  project: PresentedProject | null
+  activeSentenceId: string | null
+  selectedSentenceId: string | null
   currentTime: number
-  removed: boolean
+  duration: number
+  thumbnails: string[]
+  waveform: number[]
   proposalState: "pending" | "applying" | "applied" | "dismissed"
+  proposal: Proposal | null
   onSeek: (time: number) => void
-  onPropose: (id: number) => void
+  onSelect: (id: string) => void
+  onPropose: (id: string) => void
   onPreview: () => void
   onApply: () => void
   onDismiss: () => void
@@ -544,9 +624,7 @@ export function TranscriptPanel({
 }) {
   const [searching, setSearching] = useState(false)
   const [query, setQuery] = useState("")
-  const active = [...sentences]
-    .reverse()
-    .find((sentence) => currentTime >= sentence.start)?.id
+  const sentences = project?.transcript?.sentences ?? []
   const visibleSentences = query
     ? sentences.filter((sentence) =>
         sentence.text.toLowerCase().includes(query.toLowerCase()),
@@ -592,7 +670,7 @@ export function TranscriptPanel({
           </button>
         </div>
       )}
-      <MobileTimeline currentTime={currentTime} onSeek={onSeek} />
+      <MobileTimeline currentTime={currentTime} duration={duration} thumbnails={thumbnails} waveform={waveform} onSeek={onSeek} />
       <div className="mobile-only transcript-undo">
         <button onClick={onUndo}>
           <Icon name="undo" />
@@ -607,25 +685,27 @@ export function TranscriptPanel({
         {visibleSentences.map((sentence) => (
           <button
             key={sentence.id}
-            className={`${active === sentence.id ? "active" : ""} ${
-              sentence.id === 0 && !removed ? "proposed-remove" : ""
-            } ${sentence.id === 0 && removed ? "removed" : ""}`}
-            onClick={() => onSeek(sentence.start)}
+            className={`${activeSentenceId === sentence.id || selectedSentenceId === sentence.id ? "active" : ""} ${
+              proposal?.op?.type === "cut" && proposal.op.sentenceId === sentence.id ? "proposed-remove" : ""
+            } ${sentence.wordIds.every((id) => project?.removedWordIds.includes(id)) ? "removed" : ""}`}
+            onClick={() => onSelect(sentence.id)}
             onDoubleClick={() => onPropose(sentence.id)}
           >
-            <time>{formatTime(sentence.start)}</time>
+            <time>{formatTime(sentence.startMs / 1000)}</time>
             <span>{sentence.text}</span>
-            {sentence.id === 0 && !removed && <em>(remove)</em>}
+            {proposal?.op?.type === "cut" && proposal.op.sentenceId === sentence.id && <em>(remove)</em>}
           </button>
         ))}
       </div>
       <button
         className="selection-action"
-        onClick={() => onPropose(active ?? 0)}
+        disabled={!selectedSentenceId}
+        onClick={() => selectedSentenceId && onPropose(selectedSentenceId)}
       >
         <Icon name="scissors" size={16} /> Propose removing selected sentence
       </button>
       <EditProposal
+        proposal={proposal}
         state={proposalState}
         onPreview={onPreview}
         onApply={onApply}
@@ -657,22 +737,28 @@ export function CaptionInspector({
   size,
   position,
   safe,
+  textColor,
+  highlightColor,
   onStyle,
   onSize,
   onPosition,
   onSafe,
+  onTextColor,
+  onHighlightColor,
 }: {
   style: CaptionStyle
   size: number
   position: string
   safe: boolean
+  textColor: string
+  highlightColor: string
   onStyle: (style: CaptionStyle) => void
   onSize: (size: number) => void
   onPosition: (position: string) => void
   onSafe: (safe: boolean) => void
+  onTextColor: (color: string) => void
+  onHighlightColor: (color: string) => void
 }) {
-  const [textColor, setTextColor] = useState("white")
-  const [highlightColor, setHighlightColor] = useState("mint")
   return (
     <section className="inspector settings-panel">
       <div className="inspector-header">
@@ -713,7 +799,7 @@ export function CaptionInspector({
                 className={`swatch ${color} ${textColor === color ? "selected" : ""}`}
                 aria-label={`${color} text`}
                 aria-pressed={textColor === color}
-                onClick={() => setTextColor(color)}
+                onClick={() => onTextColor(color)}
               />
             ),
           )}
@@ -729,7 +815,7 @@ export function CaptionInspector({
                 className={`swatch ${color} ${highlightColor === color ? "selected" : ""}`}
                 aria-label={`${color} highlight`}
                 aria-pressed={highlightColor === color}
-                onClick={() => setHighlightColor(color)}
+                onClick={() => onHighlightColor(color)}
               />
             ),
           )}
@@ -765,14 +851,25 @@ export function CaptionInspector({
 export function AudioInspector({
   volume,
   music,
+  musicVolume,
+  duckMusic,
   onVolume,
-  onMusic,
+  onMusicFile,
+  onRemoveMusic,
+  onMusicVolume,
+  onDuckMusic,
 }: {
   volume: number
-  music: boolean
+  music: string | null
+  musicVolume: number
+  duckMusic: boolean
   onVolume: (volume: number) => void
-  onMusic: (music: boolean) => void
+  onMusicFile: (file: File) => void
+  onRemoveMusic: () => void
+  onMusicVolume: (volume: number) => void
+  onDuckMusic: (enabled: boolean) => void
 }) {
+  const musicInput = useRef<HTMLInputElement>(null)
   return (
     <section className="inspector settings-panel">
       <div className="inspector-header">
@@ -792,6 +889,13 @@ export function AudioInspector({
         />
         <output>{volume}%</output>
       </label>
+      <input
+        ref={musicInput}
+        className="visually-hidden"
+        type="file"
+        accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac"
+        onChange={(event) => event.target.files?.[0] && onMusicFile(event.target.files[0])}
+      />
       {!music ? (
         <div className="empty-card">
           <span className="round-icon">
@@ -799,7 +903,7 @@ export function AudioInspector({
           </span>
           <b>No background music</b>
           <p>Add a track to give your short more energy.</p>
-          <button className="secondary" onClick={() => onMusic(true)}>
+          <button className="secondary" onClick={() => musicInput.current?.click()}>
             Add music
           </button>
         </div>
@@ -809,12 +913,12 @@ export function AudioInspector({
             <Icon name="music" />
           </span>
           <div>
-            <b>Soft Focus</b>
-            <span>Background music · 00:48</span>
+            <b>{music}</b>
+            <span>Background music</span>
           </div>
           <button
             className="icon-btn"
-            onClick={() => onMusic(false)}
+            onClick={onRemoveMusic}
             aria-label="Remove music"
           >
             <Icon name="close" />
@@ -825,12 +929,22 @@ export function AudioInspector({
         <>
           <label className="range-row">
             <span>Music volume</span>
-            <input type="range" defaultValue="18" />
-            <output>18%</output>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={musicVolume}
+              onChange={(event) => onMusicVolume(Number(event.target.value))}
+            />
+            <output>{musicVolume}%</output>
           </label>
           <label className="toggle-row">
             <span>Duck music under speech</span>
-            <input type="checkbox" defaultChecked />
+            <input
+              type="checkbox"
+              checked={duckMusic}
+              onChange={(event) => onDuckMusic(event.target.checked)}
+            />
             <i />
           </label>
         </>
@@ -840,11 +954,17 @@ export function AudioInspector({
 }
 
 function MediaPanel({
+  project,
   phase,
+  thumbnail,
+  mediaItems,
   onUpload,
 }: {
+  project: PresentedProject | null
   phase: ProjectPhase
-  onUpload: (file: File) => void
+  thumbnail: string | null
+  mediaItems: Array<{ name: string; url: string }>
+  onUpload: (files: File[]) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   return (
@@ -852,13 +972,31 @@ function MediaPanel({
       <div className="inspector-header">
         <h2>Media</h2>
       </div>
-      {phase === "ready" ? (
-        <div className="media-file">
-          <img src={mediaImage} alt="" />
-          <div>
-            <b>ai-tool-review.mp4</b>
-            <span>1920 × 1080 · 48 seconds</span>
-          </div>
+      {project?.media || mediaItems.length ? (
+        <div className="media-bin" aria-label="Project media">
+          {(mediaItems.length
+            ? mediaItems
+            : [{ name: project?.media?.filename || "Video", url: "" }]
+          ).map((item, index) => (
+            <div className={`media-file ${index === 0 ? "active" : ""}`} key={`${item.name}-${index}`}>
+              {item.url ? (
+                <video src={item.url} muted preload="metadata" aria-hidden="true" />
+              ) : (
+                <img src={thumbnail || mediaImage} alt="" />
+              )}
+              <div>
+                <b>{item.name}</b>
+                {index === 0 && project?.media ? (
+                  <>
+                    <span>{project.media.width} × {project.media.height}</span>
+                    <span>{formatTime(project.media.durationMs / 1000)}</span>
+                  </>
+                ) : (
+                  <span>Media bin</span>
+                )}
+              </div>
+            </div>
+          ))}
         </div>
       ) : (
         <div className="empty-card">
@@ -884,19 +1022,22 @@ function MediaPanel({
         className="visually-hidden"
         type="file"
         accept="video/*"
-        onChange={(event) =>
-          event.target.files?.[0] && onUpload(event.target.files[0])
-        }
+        multiple
+        onChange={(event) => {
+          const files = Array.from(event.target.files ?? [])
+          if (files.length) onUpload(files)
+          event.currentTarget.value = ""
+        }}
       />
       <button
         className="secondary full"
+        disabled={phase === "uploading" || phase === "transcribing"}
         onClick={() => inputRef.current?.click()}
       >
         <Icon name="upload" size={17} /> Select local video
       </button>
       <p className="helper">
-        Uploads in this prototype stay in your browser. The sample editor does
-        not render media.
+        MP4, MOV, WEBM or MKV. Up to 2 minutes and 200 MB each.
       </p>
     </section>
   )
@@ -905,14 +1046,20 @@ function MediaPanel({
 export function FramingControls({
   ratio,
   onRatio,
+  focus,
+  onFocus,
   guides,
   onGuides,
 }: {
   ratio: string
   onRatio: (ratio: string) => void
+  focus: number
+  onFocus: (focus: number) => void
   guides: boolean
   onGuides: (value: boolean) => void
 }) {
+  const [draftFocus, setDraftFocus] = useState(focus)
+  useEffect(() => setDraftFocus(focus), [focus])
   return (
     <section className="inspector settings-panel">
       <div className="inspector-header">
@@ -937,8 +1084,16 @@ export function FramingControls({
       </fieldset>
       <label className="range-row">
         <span>Crop position</span>
-        <input type="range" defaultValue="50" />
-        <output>Center</output>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          value={Math.round(draftFocus * 100)}
+          onChange={(event) => setDraftFocus(Number(event.target.value) / 100)}
+          onPointerUp={() => onFocus(draftFocus)}
+          onKeyUp={() => onFocus(draftFocus)}
+        />
+        <output>{draftFocus < .35 ? "Left" : draftFocus > .65 ? "Right" : "Center"}</output>
       </label>
       <label className="toggle-row">
         <span>Show safe-area guides</span>
@@ -954,11 +1109,11 @@ export function FramingControls({
 }
 
 export function HistoryPanel({
-  removed,
+  project,
   onUndo,
   onRedo,
 }: {
-  removed: boolean
+  project: PresentedProject | null
   onUndo: () => void
   onRedo: () => void
 }) {
@@ -967,62 +1122,62 @@ export function HistoryPanel({
       <div className="inspector-header">
         <div>
           <h2>History</h2>
-          <span>{removed ? "3" : "2"} edits in this version</span>
+          <span>{project?.edit.history.length ?? 0} edits in this version</span>
         </div>
       </div>
       <div className="history-actions">
-        <button onClick={onUndo}>
+        <button onClick={onUndo} disabled={!project?.undo.length}>
           <Icon name="undo" />
           Undo
         </button>
-        <button onClick={onRedo}>
+        <button onClick={onRedo} disabled={!project?.redo.length}>
           <Icon name="redo" />
           Redo
         </button>
       </div>
       <div className="history-list">
-        {removed && (
+        {[...(project?.edit.history ?? [])].reverse().map((entry, index) => (
+          <article className={index === 0 ? "current" : ""} key={entry.id}>
+            <i />
+            <div>
+              <b>{entry.summary}</b>
+              <span>{index === 0 ? "Current" : entry.kind}</span>
+            </div>
+          </article>
+        ))}
+        {!project?.edit.history.length && (
           <article className="current">
             <i />
             <div>
-              <b>Trimmed introduction</b>
-              <span>Just now · current</span>
+              <b>Project created</b>
+              <span>Current</span>
             </div>
           </article>
         )}
-        <article>
-          <i />
-          <div>
-            <b>Caption highlight applied</b>
-            <span>2 minutes ago</span>
-          </div>
-        </article>
-        <article>
-          <i />
-          <div>
-            <b>Project created</b>
-            <span>5 minutes ago</span>
-          </div>
-        </article>
       </div>
     </section>
   )
 }
 
 export function Timeline({
+  project,
+  thumbnails,
+  waveform,
   currentTime,
   zoom,
   onSeek,
   onZoom,
 }: {
+  project: PresentedProject | null
+  thumbnails: string[]
+  waveform: number[]
   currentTime: number
   zoom: number
   onSeek: (time: number) => void
   onZoom: (zoom: number) => void
 }) {
-  const ticks = [0, 10, 20, 30, 40]
-  const [snapping, setSnapping] = useState(true)
-  const [splitAt, setSplitAt] = useState<number | null>(null)
+  const duration = (project?.outputDurationMs ?? 0) / 1000
+  const ticks = [0, .25, .5, .75, 1]
   return (
     <section className="timeline">
       <div className="timeline-toolbar">
@@ -1032,17 +1187,17 @@ export function Timeline({
         </b>
         <button
           className="desktop-only"
-          onClick={() => setSnapping((value) => !value)}
-          aria-pressed={snapping}
+          disabled
+          title="Timeline snapping is not needed for transcript-based cuts."
         >
-          Snapping <i className={`tiny-toggle ${snapping ? "on" : ""}`} />
+          Snapping <i className="tiny-toggle" />
         </button>
         <button
           className="desktop-only"
-          onClick={() => setSplitAt(currentTime)}
+          disabled
+          title="Use the transcript selection to make a precise cut."
         >
-          <Icon name="scissors" size={16} />{" "}
-          {splitAt === null ? "Split" : `Split at ${formatTime(splitAt)}`}
+          <Icon name="scissors" size={16} /> Split
         </button>
         <label>
           <span className="desktop-only">Zoom</span>
@@ -1057,7 +1212,7 @@ export function Timeline({
           />
         </label>
         <span className="timeline-meta">
-          48s duration&nbsp;&nbsp;|&nbsp;&nbsp;3 edits
+          {formatTime(duration)} duration&nbsp;&nbsp;|&nbsp;&nbsp;{project?.edit.history.length ?? 0} edits
         </span>
       </div>
       <div className="timeline-scroll">
@@ -1067,8 +1222,8 @@ export function Timeline({
         >
           <div className="ruler">
             {ticks.map((tick) => (
-              <span key={tick} style={{ left: `${(tick / duration) * 100}%` }}>
-                {formatTime(tick)}
+              <span key={tick} style={{ left: `${tick * 100}%` }}>
+                {formatTime(duration * tick)}
               </span>
             ))}
           </div>
@@ -1082,29 +1237,29 @@ export function Timeline({
           />
           <div
             className="playhead"
-            style={{ left: `${(currentTime / duration) * 100}%` }}
+            style={{ left: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
           >
             <span>{formatTime(currentTime)}</span>
           </div>
-          {splitAt !== null && (
-            <i
-              className="split-marker"
-              style={{ left: `${(splitAt / duration) * 100}%` }}
-            />
-          )}
           <div className="track video-track">
             <label>
               <Icon name="document" size={17} />
               Video
             </label>
-            <div className="clip selected">
-              {[0, 1, 2, 3, 4, 5].map((n) => (
-                <img
-                  key={n}
-                  src={mediaImage}
-                  alt=""
-                  style={{ objectPosition: `${20 + n * 12}% 42%` }}
-                />
+            <div className="clip-lane">
+              {(project?.segments ?? []).map((segment) => (
+                <div
+                  className="clip selected"
+                  key={segment.id}
+                  style={{
+                    left: `${duration > 0 ? (segment.outputStartMs / 1000 / duration) * 100 : 0}%`,
+                    width: `${duration > 0 ? ((segment.outputEndMs - segment.outputStartMs) / 1000 / duration) * 100 : 0}%`,
+                  }}
+                >
+                  {thumbnails.map((thumbnail, index) => (
+                    <img key={index} src={thumbnail} alt="" />
+                  ))}
+                </div>
               ))}
             </div>
           </div>
@@ -1114,8 +1269,8 @@ export function Timeline({
               Captions
             </label>
             <div className="caption-clips">
-              {sentences.slice(1, 5).map((sentence) => (
-                <span key={sentence.id}>{sentence.text}</span>
+              {(project?.cues ?? []).map((cue) => (
+                <span key={cue.id} title={cue.text}>{cue.text}</span>
               ))}
             </div>
           </div>
@@ -1125,8 +1280,8 @@ export function Timeline({
               Audio
             </label>
             <div className="waveform">
-              {Array.from({ length: 120 }, (_, n) => (
-                <i key={n} style={{ height: `${20 + ((n * 17) % 65)}%` }} />
+              {(waveform.length ? waveform : Array.from({ length: 120 }, () => 0.18)).map((peak, n) => (
+                <i key={n} style={{ height: `${Math.max(12, peak * 100)}%` }} />
               ))}
             </div>
           </div>
@@ -1138,49 +1293,48 @@ export function Timeline({
 
 export function VoiceDock({
   state,
-  onState,
+  level,
+  detail,
+  lines,
+  onToggle,
+  onStop,
 }: {
   state: VoiceState
-  onState: (state: VoiceState) => void
+  level: number
+  detail: string | null
+  lines: Array<{ who: "user" | "agent"; text: string }>
+  onToggle: () => void
+  onStop: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const isError = state === "Permission error" || state === "Connection error"
   const active = state !== "Disconnected" && !isError
-  const toggle = () => {
-    if (active || isError) onState("Disconnected")
-    else {
-      onState("Connecting")
-      demoServices.after(700, () => onState("Listening"))
-    }
-  }
+  const voiceOpen = expanded || state === "Listening" || state === "Connecting"
   const instruction = isError
-    ? state === "Permission error"
-      ? "Microphone access was declined."
-      : "Voice service could not connect."
-    : active
-      ? "Keep the example, shorten the intro."
-      : "Tap to simulate voice editing"
+    ? detail || (state === "Permission error" ? "Microphone access was declined." : "Voice service could not connect.")
+    : lines.at(-1)?.text || (active ? "Speak naturally to edit this project." : "Tap to start voice editing")
   return (
     <section
-      className={`voice-dock ${active ? "active" : ""} ${isError ? "voice-error" : ""}`}
+      className={`voice-dock ${active ? "active" : ""} ${state === "Listening" ? "listening" : ""} ${voiceOpen ? "voice-open" : ""} ${isError ? "voice-error" : ""}`}
     >
       {expanded && (
         <div className="voice-history">
           <b>Recent conversation</b>
-          <p><span>You</span> Keep the example, shorten the intro.</p>
-          <p><span>Cutback</span> I prepared a 4.2 second trim for review.</p>
+          {lines.slice(-6).map((line, index) => (
+            <p key={`${line.who}-${index}`}><span>{line.who === "user" ? "You" : "Cutback"}</span> {line.text}</p>
+          ))}
         </div>
       )}
       <button
         className="mic-button"
-        onClick={toggle}
+        onClick={onToggle}
         aria-label={active ? "Disconnect voice" : "Connect voice"}
       >
         <Icon name="mic" size={28} />
       </button>
       <div className="voice-wave">
-        {[4, 8, 13, 20, 11, 17, 7, 14, 5].map((height, index) => (
-          <i key={index} style={{ height }} />
+        {[.32, .54, .78, 1, .64, .88, .45, .7, .36].map((weight, index) => (
+          <i key={index} style={{ height: `${Math.max(4, Math.min(34, level * 360 * weight))}px` }} />
         ))}
       </div>
       <button
@@ -1199,7 +1353,7 @@ export function VoiceDock({
         <p>{instruction}</p>
       </button>
       {active && (
-        <button className="stop-button" onClick={() => onState("Disconnected")}>
+        <button className="stop-button" onClick={onStop}>
           <i /> <span className="desktop-only">Stop</span>
         </button>
       )}
@@ -1209,17 +1363,19 @@ export function VoiceDock({
 
 export function ExportDialog({
   state,
-  onState,
+  progress,
+  error,
+  downloadUrl,
+  onBegin,
   onClose,
 }: {
   state: ExportState
-  onState: (state: ExportState) => void
+  progress: number
+  error: string | null
+  downloadUrl: string | null
+  onBegin: () => void
   onClose: () => void
 }) {
-  const begin = () => {
-    onState("processing")
-    demoServices.after(1600, () => onState("complete"))
-  }
   return (
     <div
       className="modal-backdrop"
@@ -1260,7 +1416,7 @@ export function ExportDialog({
                 <option>720p</option>
               </select>
             </label>
-            <button className="primary full" onClick={begin}>
+            <button className="primary full" onClick={onBegin}>
               Export MP4
             </button>
           </>
@@ -1271,11 +1427,9 @@ export function ExportDialog({
             <h2 id="export-title">Rendering your video</h2>
             <p>Applying captions and edits…</p>
             <div className="progress">
-              <i />
+              <i style={{ width: `${Math.max(2, progress * 100)}%` }} />
             </div>
-            <button className="secondary" onClick={() => onState("error")}>
-              Show error example
-            </button>
+            <span>{Math.round(progress * 100)}%</span>
           </div>
         )}
         {state === "complete" && (
@@ -1285,12 +1439,11 @@ export function ExportDialog({
             </span>
             <h2 id="export-title">Export complete</h2>
             <p>
-              No file was produced. Connect the real renderer through the typed
-              onExport callback.
+              Your edited MP4 is ready to download.
             </p>
-            <button className="primary full" onClick={onClose}>
-              Done
-            </button>
+            <a className="primary full" href={downloadUrl || "#"} download="cutback.mp4">
+              Download MP4
+            </a>
           </div>
         )}
         {state === "error" && (
@@ -1299,73 +1452,13 @@ export function ExportDialog({
               <Icon name="alert" />
             </span>
             <h2 id="export-title">Export could not finish</h2>
-            <p>Export failed. Your edits are safe.</p>
-            <button className="primary full" onClick={begin}>
+            <p>{error || "Export failed. Your edits are safe."}</p>
+            <button className="primary full" onClick={onBegin}>
               Retry export
             </button>
           </div>
         )}
       </section>
-    </div>
-  )
-}
-
-function DemoMenu({
-  phase,
-  voice,
-  onPhase,
-  onVoice,
-  onClose,
-}: {
-  phase: ProjectPhase
-  voice: VoiceState
-  onPhase: (phase: ProjectPhase) => void
-  onVoice: (voice: VoiceState) => void
-  onClose: () => void
-}) {
-  return (
-    <div className="demo-menu">
-      <div className="demo-menu-head">
-        <b>Demo states</b>
-        <button className="icon-btn" onClick={onClose}>
-          <Icon name="close" />
-        </button>
-      </div>
-      <label>
-        Project
-        <select
-          value={phase}
-          onChange={(event) => onPhase(event.target.value as ProjectPhase)}
-        >
-          <option value="ready">Ready</option>
-          <option value="empty">Empty</option>
-          <option value="uploading">Uploading</option>
-          <option value="transcribing">Transcribing</option>
-        </select>
-      </label>
-      <label>
-        Voice
-        <select
-          value={voice}
-          onChange={(event) => onVoice(event.target.value as VoiceState)}
-        >
-          {[
-            "Disconnected",
-            "Connecting",
-            "Listening",
-            "Thinking",
-            "Speaking",
-            "Applying edit",
-            "Permission error",
-            "Connection error",
-          ].map((item) => (
-            <option key={item}>{item}</option>
-          ))}
-        </select>
-      </label>
-      <p>
-        Prototype controls only. No microphone or backend connection is used.
-      </p>
     </div>
   )
 }
@@ -1386,7 +1479,6 @@ function MoreSheet({
           ["Media", "media", "folder"],
           ["Framing", "framing", "crop"],
           ["History", "history", "history"],
-          ["Demo states", "transcript", "more"],
         ].map(([label, tool, icon]) => (
           <button
             key={label}
@@ -1405,193 +1497,649 @@ function MoreSheet({
   )
 }
 
-export function EditorShell({ callbacks = {} }: { callbacks?: EditorCallbacks }) {
+function mapVoiceState(phase: VoicePhase, detail?: string): VoiceState {
+  if (phase === "connecting") return "Connecting"
+  if (phase === "listening" || phase === "user") return "Listening"
+  if (phase === "thinking") return "Thinking"
+  if (phase === "editing") return "Applying edit"
+  if (phase === "speaking") return "Speaking"
+  if (phase === "error")
+    return detail?.toLowerCase().includes("permission") ? "Permission error" : "Connection error"
+  return "Disconnected"
+}
+
+function waitForMedia(video: HTMLVideoElement, event: "loadeddata" | "seeked") {
+  return new Promise<void>((resolve, reject) => {
+    const done = () => {
+      cleanup()
+      resolve()
+    }
+    const failed = () => {
+      cleanup()
+      reject(new Error("Could not read preview frames."))
+    }
+    const cleanup = () => {
+      video.removeEventListener(event, done)
+      video.removeEventListener("error", failed)
+    }
+    video.addEventListener(event, done, { once: true })
+    video.addEventListener("error", failed, { once: true })
+  })
+}
+
+async function createThumbnails(src: string, durationSeconds: number): Promise<string[]> {
+  if (!src || durationSeconds <= 0) return []
+  const video = document.createElement("video")
+  video.crossOrigin = "anonymous"
+  video.muted = true
+  video.preload = "auto"
+  video.src = src
+  await waitForMedia(video, "loadeddata")
+  const canvas = document.createElement("canvas")
+  canvas.width = 240
+  canvas.height = 135
+  const context = canvas.getContext("2d")
+  if (!context) return []
+  const frames: string[] = []
+  for (let index = 0; index < 6; index += 1) {
+    video.currentTime = Math.min(durationSeconds - 0.05, Math.max(0, durationSeconds * ((index + .5) / 6)))
+    await waitForMedia(video, "seeked")
+    context.drawImage(video, 0, 0, canvas.width, canvas.height)
+    frames.push(canvas.toDataURL("image/jpeg", .72))
+  }
+  video.removeAttribute("src")
+  video.load()
+  return frames
+}
+
+export function EditorShell() {
+  const [health, setHealth] = useState<Health | null>(null)
+  const [project, setProject] = useState<PresentedProject | null>(null)
+  const [title, setTitle] = useState("Untitled project")
+  const [saveStatus, setSaveStatus] = useState("Loading…")
   const [activeTool, setActiveTool] = useState<Tool>("transcript")
-  const [mobileTab, setMobileTab] = useState<"edit" | "captions" | "audio">(
-    "edit",
-  )
-  const [currentTime, setCurrentTime] = useState(12)
+  const [mobileTab, setMobileTab] = useState<"edit" | "captions" | "audio">("edit")
+  const [currentTime, setCurrentTime] = useState(0)
   const [playing, setPlaying] = useState(false)
-  const [removed, setRemoved] = useState(false)
-  const [redoAvailable, setRedoAvailable] = useState(false)
-  const [proposalState, setProposalState] =
-    useState<"pending" | "applying" | "applied" | "dismissed">("pending")
-  const [captionStyle, setCaptionStyle] = useState<CaptionStyle>("highlight")
-  const [captionSize, setCaptionSize] = useState(32)
-  const [captionPosition, setCaptionPosition] = useState("Bottom")
+  const [selectedSentenceId, setSelectedSentenceId] = useState<string | null>(null)
+  const [proposalBusy, setProposalBusy] = useState(false)
   const [safe, setSafe] = useState(true)
-  const [ratio, setRatio] = useState("16:9")
   const [guides, setGuides] = useState(false)
-  const [volume, setVolume] = useState(84)
-  const [music, setMusic] = useState(false)
-  const [voice, setVoice] = useState<VoiceState>("Listening")
   const [zoom, setZoom] = useState(1)
   const [exportOpen, setExportOpen] = useState(false)
   const [exportState, setExportState] = useState<ExportState>("options")
+  const [exportError, setExportError] = useState<string | null>(null)
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null)
   const [moreOpen, setMoreOpen] = useState(false)
-  const [demoOpen, setDemoOpen] = useState(false)
-  const [phase, setPhase] = useState<ProjectPhase>("ready")
   const [previewMode, setPreviewMode] = useState<"original" | "edited">("edited")
-  const [mediaSrc, setMediaSrc] = useState<string | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [voice, setVoice] = useState<VoiceState>("Disconnected")
+  const [voiceDetail, setVoiceDetail] = useState<string | null>(null)
+  const [voiceLevel, setVoiceLevel] = useState(0)
+  const [voiceLines, setVoiceLines] = useState<Array<{ who: "user" | "agent"; text: string }>>([])
+  const [thumbnails, setThumbnails] = useState<string[]>([])
+  const [mediaItems, setMediaItems] = useState<Array<{ name: string; url: string }>>([])
+  const [waveform, setWaveform] = useState<number[]>([])
+
+  const projectRef = useRef<PresentedProject | null>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const musicRef = useRef<HTMLAudioElement | null>(null)
+  const voiceRef = useRef<VoiceSession | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const statusTimerRef = useRef<number | null>(null)
+  const mediaUrlsRef = useRef<string[]>([])
+
+  const setStatus = useCallback((message: string, restore = true) => {
+    if (statusTimerRef.current) window.clearTimeout(statusTimerRef.current)
+    setSaveStatus(message)
+    if (restore) {
+      statusTimerRef.current = window.setTimeout(() => setSaveStatus("Saved"), 4200)
+    }
+  }, [])
+
+  const remember = useCallback((next: PresentedProject) => {
+    projectRef.current = next
+    setProject(next)
+    setTitle(next.title)
+    localStorage.setItem(PROJECT_KEY, next.id)
+    voiceRef.current?.refreshPrompt(next)
+  }, [])
 
   useEffect(() => {
-    if (!playing) return
-    const timer = window.setInterval(
-      () =>
-        setCurrentTime((time) =>
-          time >= duration ? 0 : Math.min(duration, time + 0.1),
-        ),
-      100,
-    )
-    return () => window.clearInterval(timer)
-  }, [playing])
+    let alive = true
+    const existing = localStorage.getItem(PROJECT_KEY)
+    void Promise.all([
+      api.health(),
+      existing ? api.get(existing).catch(() => null) : Promise.resolve(null),
+    ])
+      .then(([nextHealth, restored]) => {
+        if (!alive) return
+        setHealth(nextHealth)
+        if (restored) remember(restored)
+        else if (existing) localStorage.removeItem(PROJECT_KEY)
+        setSaveStatus("Saved")
+      })
+      .catch((error: Error) => {
+        if (alive) setStatus(error.message || "Backend unavailable", false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [remember, setStatus])
 
-  const seek = (time: number) => {
-    setCurrentTime(time)
-    callbacks.onSeek?.(time)
-  }
-  const apply = () => {
-    setProposalState("applying")
-    setVoice("Applying edit")
-    demoServices.after(900, () => {
-      setRemoved(true)
-      setProposalState("applied")
-      setVoice("Listening")
-      setRedoAvailable(false)
-      callbacks.onApplyEdit?.(0)
+  useEffect(() => {
+    projectRef.current = project
+  }, [project])
+
+  useEffect(() => {
+    if (!project?.id || title.trim() === project.title || !title.trim()) return
+    setSaveStatus("Saving…")
+    const timer = window.setTimeout(() => {
+      void api.rename(project.id, title.trim())
+        .then((next) => {
+          remember(next)
+          setStatus("Saved")
+        })
+        .catch((error: Error) => setStatus(error.message, false))
+    }, 650)
+    return () => window.clearTimeout(timer)
+  }, [project?.id, project?.title, remember, setStatus, title])
+
+  useEffect(() => {
+    const shouldPoll =
+      project?.jobs.transcription.status === "running" ||
+      project?.jobs.export.status === "running" ||
+      exportState === "processing"
+    if (!project?.id || !shouldPoll) return
+    const timer = window.setInterval(() => {
+      void api.get(project.id).then(remember).catch(() => undefined)
+    }, 850)
+    return () => window.clearInterval(timer)
+  }, [exportState, project?.id, project?.jobs.export.status, project?.jobs.transcription.status, remember])
+
+  useEffect(() => {
+    if (project?.jobs.transcription.status === "completed") setSaveStatus("Saved")
+    if (project?.jobs.transcription.status === "error")
+      setStatus(project.jobs.transcription.error || "Transcription failed.", false)
+  }, [project?.jobs.transcription.error, project?.jobs.transcription.status, setStatus])
+
+  const mediaSrc = project?.media ? "/api/projects/" + project.id + "/media?v=" + encodeURIComponent(project.updatedAt) : null
+  const musicSrc = project?.music ? "/api/projects/" + project.id + "/music?v=" + encodeURIComponent(project.updatedAt) : null
+
+  useEffect(() => {
+    if (!project?.media || !mediaSrc) {
+      setThumbnails([])
+      setWaveform([])
+      return
+    }
+    let alive = true
+    void Promise.all([
+      createThumbnails(mediaSrc, project.media.durationMs / 1000).catch(() => []),
+      api.waveform(project.id).then((result) => result.peaks).catch(() => []),
+    ]).then(([frames, peaks]) => {
+      if (!alive) return
+      setThumbnails(frames)
+      setWaveform(peaks)
     })
-  }
-  const undo = () => {
-    if (removed) {
-      setRemoved(false)
-      setProposalState("pending")
-      setRedoAvailable(true)
+    return () => {
+      alive = false
     }
-    callbacks.onUndo?.()
-  }
-  const redo = () => {
-    if (redoAvailable) {
-      setRemoved(true)
-      setProposalState("applied")
-      setRedoAvailable(false)
+  }, [mediaSrc, project?.id, project?.media?.durationMs])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (video && project) video.volume = Math.max(0, Math.min(1, project.edit.audio.speechVolume))
+  }, [project?.edit.audio.speechVolume])
+
+  useEffect(() => {
+    return () => {
+      voiceRef.current?.end()
+      if (statusTimerRef.current) window.clearTimeout(statusTimerRef.current)
+      mediaUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
     }
-    callbacks.onRedo?.()
+  }, [])
+
+  const phase: ProjectPhase = uploading
+    ? "uploading"
+    : !project?.media
+      ? "empty"
+      : project.jobs.transcription.status === "running"
+        ? "transcribing"
+        : "ready"
+
+  const selectedWordIds = useMemo(
+    () => project?.transcript?.sentences.find((sentence) => sentence.id === selectedSentenceId)?.wordIds ?? [],
+    [project?.transcript?.sentences, selectedSentenceId],
+  )
+
+  const activeSourceMs = useMemo(() => {
+    const current = project
+    if (!current) return 0
+    if (previewMode === "original") return currentTime * 1000
+    const segment = current.segments.find(
+      (item) => currentTime * 1000 >= item.outputStartMs && currentTime * 1000 <= item.outputEndMs,
+    )
+    return segment ? segment.sourceStartMs + currentTime * 1000 - segment.outputStartMs : 0
+  }, [currentTime, previewMode, project])
+
+  const activeSentenceId =
+    project?.transcript?.sentences.find(
+      (sentence) => activeSourceMs >= sentence.startMs && activeSourceMs <= sentence.endMs,
+    )?.id ?? null
+
+  const handleVideoReady = useCallback((video: HTMLVideoElement | null) => {
+    videoRef.current = video
+  }, [])
+
+  const seek = useCallback((seconds: number) => {
+    const current = projectRef.current
+    const video = videoRef.current
+    if (!current || !video) return
+    if (previewMode === "original") {
+      const target = Math.max(0, Math.min(current.media?.durationMs ?? 0, seconds * 1000))
+      video.currentTime = target / 1000
+      setCurrentTime(target / 1000)
+      return
+    }
+    const target = Math.max(0, Math.min(current.outputDurationMs, seconds * 1000))
+    const segment =
+      current.segments.find((item) => target >= item.outputStartMs && target <= item.outputEndMs) ??
+      current.segments[current.segments.length - 1]
+    if (!segment) return
+    const sourceMs = segment.sourceStartMs + Math.max(0, target - segment.outputStartMs)
+    video.currentTime = sourceMs / 1000
+    setCurrentTime(target / 1000)
+  }, [previewMode])
+
+  const handleVideoTimeUpdate = useCallback((video: HTMLVideoElement) => {
+    const current = projectRef.current
+    if (!current) return
+    const sourceMs = video.currentTime * 1000
+    if (previewMode === "original") {
+      setCurrentTime(video.currentTime)
+      setPlaying(!video.paused)
+      return
+    }
+    let segment = current.segments.find(
+      (item) => sourceMs >= item.sourceStartMs && sourceMs <= item.sourceEndMs,
+    )
+    if (!segment && !video.paused) {
+      const next = current.segments.find((item) => item.sourceStartMs > sourceMs)
+      if (next) {
+        video.currentTime = next.sourceStartMs / 1000
+        segment = next
+      } else {
+        video.pause()
+        setPlaying(false)
+        return
+      }
+    }
+    if (!segment) return
+    const outputMs = segment.outputStartMs + Math.max(0, sourceMs - segment.sourceStartMs)
+    setCurrentTime(outputMs / 1000)
+    setPlaying(!video.paused)
+
+    const music = musicRef.current
+    if (music && current.music) {
+      const speechActive = current.transcript?.words.some(
+        (word) => sourceMs >= word.startMs && sourceMs <= word.endMs,
+      ) ?? false
+      music.volume = Math.max(
+        0,
+        Math.min(1, current.edit.audio.musicVolume * (current.edit.audio.duckMusic && speechActive ? .42 : 1)),
+      )
+      if (Math.abs(music.currentTime - outputMs / 1000) > .35)
+        music.currentTime = (outputMs / 1000) % Math.max(1, music.duration || outputMs / 1000 + 1)
+      if (!video.paused && music.paused) void music.play().catch(() => undefined)
+      if (video.paused && !music.paused) music.pause()
+    }
+  }, [previewMode])
+
+  const postContext = useCallback(async () => {
+    const current = projectRef.current
+    if (!current) return
+    await api.playback(current.id, {
+      sourceTimeMs: (videoRef.current?.currentTime ?? 0) * 1000,
+      outputTimeMs: currentTime * 1000,
+      selectedWordIds,
+      capturedAt: new Date().toISOString(),
+      reason: "selection",
+    })
+  }, [currentTime, selectedWordIds])
+
+  const runTool = useCallback(async (name: string, args: Record<string, unknown>) => {
+    const current = projectRef.current
+    if (!current) return null
+    setStatus("Saving…", false)
+    try {
+      if (!["undo_edit", "redo_edit", "read_project_context", "dismiss_proposal"].includes(name))
+        await postContext()
+      const response = await api.tool(current.id, name, args, crypto.randomUUID())
+      remember(response.project)
+      const target = response.result.seek_output_ms
+      if (typeof target === "number") seek(target / 1000)
+      const message =
+        typeof response.result.summary === "string"
+          ? response.result.summary
+          : typeof response.result.message === "string"
+            ? response.result.message
+            : "Saved"
+      setStatus(message)
+      return response
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The edit failed."
+      setStatus(message, false)
+      return null
+    }
+  }, [postContext, remember, seek, setStatus])
+
+  const upload = useCallback(async (file: File) => {
+    setUploading(true)
+    setStatus("Uploading…", false)
+    voiceRef.current?.end()
+    voiceRef.current = null
+    setVoice("Disconnected")
+    try {
+      const current = projectRef.current ?? await api.create(file.name.replace(/\.[^.]+$/, ""))
+      if (!projectRef.current) remember(current)
+      const uploaded = await api.upload(current.id, file)
+      remember(uploaded)
+      setSelectedSentenceId(null)
+      setCurrentTime(0)
+      setPlaying(false)
+      if (!health?.assemblyai) throw new Error("ASSEMBLYAI_API_KEY is missing on the server.")
+      setStatus("Transcribing…", false)
+      const transcribing = await api.transcribe(uploaded.id)
+      remember(transcribing)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Upload failed.", false)
+    } finally {
+      setUploading(false)
+    }
+  }, [health?.assemblyai, remember, setStatus])
+
+  const uploadFiles = useCallback((files: File[]) => {
+    mediaUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
+    const items = files.map((file) => ({ name: file.name, url: URL.createObjectURL(file) }))
+    mediaUrlsRef.current = items.map((item) => item.url)
+    setMediaItems(items)
+    if (files[0]) void upload(files[0])
+  }, [upload])
+
+  const selectSentence = useCallback((id: string) => {
+    const current = projectRef.current
+    const sentence = current?.transcript?.sentences.find((item) => item.id === id)
+    if (!current || !sentence) return
+    setSelectedSentenceId(id)
+    const mapped = sourceToOutput(current.segments, sentence.startMs)
+    if (mapped === null) {
+      setPreviewMode("original")
+      window.setTimeout(() => seek(sentence.startMs / 1000), 0)
+    } else {
+      seek(mapped / 1000)
+    }
+  }, [seek])
+
+  const pendingProposal =
+    [...(project?.proposals ?? [])].reverse().find((item) => item.status === "pending") ?? null
+
+  const proposeSentence = useCallback(async (id: string) => {
+    setProposalBusy(true)
+    await runTool("propose_cut", { action: "remove", use: "sentence_id", sentence_id: id, apply: false })
+    setProposalBusy(false)
+  }, [runTool])
+
+  const previewProposal = useCallback(async () => {
+    if (!pendingProposal) return
+    const args =
+      pendingProposal.op?.type === "cut"
+        ? { start_ms: pendingProposal.op.startMs, end_ms: pendingProposal.op.endMs }
+        : pendingProposal.sequence?.[0]
+          ? { sentence_id: pendingProposal.sequence[0].sentenceId }
+          : {}
+    const response = await runTool("preview_segment", args)
+    if (response) setPlaying(true)
+  }, [pendingProposal, runTool])
+
+  const applyProposal = useCallback(async () => {
+    if (!pendingProposal) return
+    setProposalBusy(true)
+    await runTool("apply_edit", { proposal_id: pendingProposal.id })
+    setProposalBusy(false)
+  }, [pendingProposal, runTool])
+
+  const dismissProposal = useCallback(async () => {
+    if (!pendingProposal) return
+    await runTool("dismiss_proposal", { proposal_id: pendingProposal.id })
+  }, [pendingProposal, runTool])
+
+  const ensureAudioContext = () => {
+    if (!audioContextRef.current) audioContextRef.current = new AudioContext()
+    void audioContextRef.current.resume()
+    return audioContextRef.current
   }
+
+  const stopVoice = useCallback(() => {
+    voiceRef.current?.end()
+    voiceRef.current = null
+    setVoice("Disconnected")
+    setVoiceDetail(null)
+    setVoiceLevel(0)
+  }, [])
+
+  const startVoice = useCallback(async () => {
+    const current = projectRef.current
+    if (!current?.transcript) {
+      setStatus("Upload and transcribe a video before starting voice.", false)
+      return
+    }
+    if (voiceRef.current) {
+      stopVoice()
+      return
+    }
+    const session = new VoiceSession(
+      current.id,
+      {
+        onPhase: (phase, detail) => {
+          setVoice(mapVoiceState(phase, detail))
+          setVoiceDetail(detail ?? null)
+        },
+        onLine: (who, text) => {
+          setVoiceLines((lines) => [...lines.filter((line) => !(line.who === who && line.text === text)), { who, text }].slice(-12))
+        },
+        onLevel: setVoiceLevel,
+        onProject: remember,
+        onSeek: (outputMs) => seek(outputMs / 1000),
+        snapshot: () => ({
+          sourceTimeMs: (videoRef.current?.currentTime ?? 0) * 1000,
+          outputTimeMs: currentTime * 1000,
+          selectedWordIds,
+        }),
+        onUserSpeech: (active) => {
+          if (active) {
+            videoRef.current?.pause()
+            setPlaying(false)
+          }
+        },
+      },
+      ensureAudioContext(),
+    )
+    voiceRef.current = session
+    try {
+      await session.start(current)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Voice connection failed."
+      setVoice(message.toLowerCase().includes("permission") ? "Permission error" : "Connection error")
+      setVoiceDetail(message)
+      session.end()
+      voiceRef.current = null
+    }
+  }, [currentTime, remember, seek, selectedWordIds, setStatus, stopVoice])
+
+  const beginExport = useCallback(async () => {
+    const current = projectRef.current
+    if (!current?.media) {
+      setExportError("Upload a video before exporting.")
+      setExportState("error")
+      return
+    }
+    setExportError(null)
+    setDownloadUrl(null)
+    setExportState("processing")
+    try {
+      const response = await api.tool(current.id, "export_video", {}, crypto.randomUUID())
+      remember(response.project)
+      setDownloadUrl("/api/projects/" + current.id + "/export")
+      setExportState("complete")
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : "Export failed.")
+      setExportState("error")
+    }
+  }, [remember])
+
+  const captionStyle: CaptionStyle =
+    project?.edit.captions.preset === "bold"
+      ? project.edit.captions.wordHighlight ? "highlight" : "bold"
+      : "clean"
+  const captionSize = Math.round((project?.edit.captions.fontScale ?? 1) * 32)
+  const captionPosition =
+    project?.edit.captions.position === "top"
+      ? "Top"
+      : project?.edit.captions.position === "center"
+        ? "Middle"
+        : "Bottom"
+  const textColor =
+    Object.entries(TEXT_COLORS).find(([, value]) => value.toLowerCase() === (project?.edit.captions.color.toLowerCase() ?? ""))?.[0] ?? "white"
+  const highlightColor =
+    Object.entries(HIGHLIGHT_COLORS).find(([, value]) => value.toLowerCase() === (project?.edit.captions.highlightColor.toLowerCase() ?? ""))?.[0] ?? "mint"
+  const ratio = ratioFromProject(project)
+  const duration = ((previewMode === "original" ? project?.media?.durationMs : project?.outputDurationMs) ?? 0) / 1000
+
   const changeTool = (tool: Tool) => {
     setActiveTool(tool)
     if (tool === "transcript") setMobileTab("edit")
     if (tool === "captions") setMobileTab("captions")
     if (tool === "audio") setMobileTab("audio")
   }
-  const upload = (file: File) => {
-    setMediaSrc((previous) => {
-      if (previous) URL.revokeObjectURL(previous)
-      return URL.createObjectURL(file)
-    })
-    callbacks.onUpload?.(file)
-    setPhase("uploading")
-    demoServices.after(900, () => setPhase("transcribing"))
-    demoServices.after(1900, () => setPhase("ready"))
-  }
 
-  const inspector = useMemo(() => {
-    if (activeTool === "captions")
-      return (
-        <CaptionInspector
-          style={captionStyle}
-          size={captionSize}
-          position={captionPosition}
-          safe={safe}
-          onStyle={(value) => {
-            setCaptionStyle(value)
-            callbacks.onCaptionChange?.(value)
-          }}
-          onSize={setCaptionSize}
-          onPosition={setCaptionPosition}
-          onSafe={setSafe}
-        />
-      )
-    if (activeTool === "audio")
-      return (
-        <AudioInspector
-          volume={volume}
-          music={music}
-          onVolume={(value) => {
-            setVolume(value)
-            callbacks.onAudioChange?.(value)
-          }}
-          onMusic={setMusic}
-        />
-      )
-    if (activeTool === "media")
-      return <MediaPanel phase={phase} onUpload={upload} />
-    if (activeTool === "framing")
-      return (
-        <FramingControls
-          ratio={ratio}
-          onRatio={(value) => {
-            setRatio(value)
-            callbacks.onFramingChange?.(value)
-          }}
-          guides={guides}
-          onGuides={setGuides}
-        />
-      )
-    if (activeTool === "history")
-      return <HistoryPanel removed={removed} onUndo={undo} onRedo={redo} />
-    return (
-      <TranscriptPanel
-        currentTime={currentTime}
-        removed={removed}
-        proposalState={proposalState}
-        onSeek={seek}
-        onPropose={(id) => {
-          setProposalState("pending")
-          callbacks.onProposeEdit?.(id)
-        }}
-        onPreview={() => {
-          seek(0)
-          setPlaying(true)
-        }}
-        onApply={apply}
-        onDismiss={() => setProposalState("dismissed")}
-        onUndo={undo}
-        onRedo={redo}
+  let inspector: React.ReactNode
+  if (activeTool === "captions") {
+    inspector = (
+      <CaptionInspector
+        style={captionStyle}
+        size={captionSize}
+        position={captionPosition}
+        safe={safe}
+        textColor={textColor}
+        highlightColor={highlightColor}
+        onStyle={(value) =>
+          void runTool("set_caption_style", {
+            enabled: true,
+            preset: value === "highlight" ? "bold" : value,
+            word_highlight: value === "highlight",
+          })
+        }
+        onSize={(value) => void runTool("set_caption_style", { enabled: true, font_scale: value / 32 })}
+        onPosition={(value) =>
+          void runTool("set_caption_style", {
+            enabled: true,
+            position: value === "Middle" ? "center" : value.toLowerCase(),
+          })
+        }
+        onSafe={setSafe}
+        onTextColor={(value) => void runTool("set_caption_style", { enabled: true, color: TEXT_COLORS[value] })}
+        onHighlightColor={(value) =>
+          void runTool("set_caption_style", { enabled: true, word_highlight: true, highlight_color: HIGHLIGHT_COLORS[value] })
+        }
       />
     )
-  }, [
-    activeTool,
-    captionStyle,
-    captionSize,
-    captionPosition,
-    safe,
-    volume,
-    music,
-    phase,
-    ratio,
-    guides,
-    removed,
-    redoAvailable,
-    currentTime,
-    proposalState,
-  ])
+  } else if (activeTool === "audio") {
+    inspector = (
+      <AudioInspector
+        volume={Math.round((project?.edit.audio.speechVolume ?? 1) * 100)}
+        music={project?.music?.filename ?? null}
+        musicVolume={Math.round((project?.edit.audio.musicVolume ?? .18) * 100)}
+        duckMusic={project?.edit.audio.duckMusic ?? true}
+        onVolume={(value) => void runTool("set_audio_mix", { speech_volume: value / 100 })}
+        onMusicFile={(file) => {
+          const current = projectRef.current
+          if (!current) return
+          setStatus("Uploading music…", false)
+          void api.uploadMusic(current.id, file).then(remember).then(() => setStatus("Saved")).catch((error: Error) => setStatus(error.message, false))
+        }}
+        onRemoveMusic={() => void runTool("remove_music", {})}
+        onMusicVolume={(value) => void runTool("set_audio_mix", { music_volume: value / 100 })}
+        onDuckMusic={(enabled) => void runTool("set_audio_mix", { duck_music: enabled })}
+      />
+    )
+  } else if (activeTool === "media") {
+    inspector = (
+      <MediaPanel
+        project={project}
+        phase={phase}
+        thumbnail={thumbnails[0] ?? null}
+        mediaItems={mediaItems}
+        onUpload={uploadFiles}
+      />
+    )
+  } else if (activeTool === "framing") {
+    inspector = (
+      <FramingControls
+        ratio={ratio}
+        onRatio={(value) => void runTool("set_aspect_ratio", { mode: modeFromRatio(value) })}
+        focus={project?.edit.framing.focus ?? .5}
+        onFocus={(focus) => void runTool("set_aspect_ratio", { mode: projectRef.current?.edit.framing.mode, focus })}
+        guides={guides}
+        onGuides={setGuides}
+      />
+    )
+  } else if (activeTool === "history") {
+    inspector = <HistoryPanel project={project} onUndo={() => void runTool("undo_edit", {})} onRedo={() => void runTool("redo_edit", {})} />
+  } else {
+    inspector = (
+      <TranscriptPanel
+        project={project}
+        activeSentenceId={activeSentenceId}
+        selectedSentenceId={selectedSentenceId}
+        currentTime={currentTime}
+        duration={duration}
+        thumbnails={thumbnails}
+        waveform={waveform}
+        proposalState={proposalBusy ? "applying" : "pending"}
+        proposal={pendingProposal}
+        onSeek={seek}
+        onSelect={selectSentence}
+        onPropose={proposeSentence}
+        onPreview={previewProposal}
+        onApply={applyProposal}
+        onDismiss={dismissProposal}
+        onUndo={() => void runTool("undo_edit", {})}
+        onRedo={() => void runTool("redo_edit", {})}
+      />
+    )
+  }
 
   return (
     <main className="app-shell">
       <EditorHeader
+        title={title}
+        saveStatus={saveStatus}
+        onTitle={setTitle}
         onExport={() => {
           setExportState("options")
           setExportOpen(true)
         }}
-        onUndo={undo}
-        onRedo={redo}
-        canRedo={redoAvailable}
+        onUndo={() => void runTool("undo_edit", {})}
+        onRedo={() => void runTool("redo_edit", {})}
+        canUndo={Boolean(project?.undo.length)}
+        canRedo={Boolean(project?.redo.length)}
         onMore={() => setMoreOpen(true)}
       />
       <ToolNavigation active={activeTool} onChange={changeTool} />
       <div className="workspace">
         <div className="preview-column">
           <VideoPreview
+            project={project}
             currentTime={currentTime}
             playing={playing}
             ratio={ratio}
@@ -1601,13 +2149,19 @@ export function EditorShell({ callbacks = {} }: { callbacks?: EditorCallbacks })
             showGuides={guides}
             mode={previewMode}
             mediaSrc={mediaSrc}
-            onPlay={() => setPlaying((value) => !value)}
-            onSeek={seek}
-            onRatio={(value) => {
-              setRatio(value)
-              callbacks.onFramingChange?.(value)
+            onVideoReady={handleVideoReady}
+            onVideoTimeUpdate={handleVideoTimeUpdate}
+            onPlay={() => {
+              if (!project?.media) return
+              setPlaying((value) => !value)
             }}
-            onMode={setPreviewMode}
+            onSeek={seek}
+            onRatio={(value) => void runTool("set_aspect_ratio", { mode: modeFromRatio(value) })}
+            onMode={(value) => {
+              setPreviewMode(value)
+              setPlaying(false)
+              window.setTimeout(() => seek(0), 0)
+            }}
           />
           <div className="mobile-tabs mobile-only" role="tablist">
             {(["edit", "captions", "audio"] as const).map((tab) => (
@@ -1628,53 +2182,38 @@ export function EditorShell({ callbacks = {} }: { callbacks?: EditorCallbacks })
           <div className="mobile-tool-panel mobile-only">{inspector}</div>
           <VoiceDock
             state={voice}
-            onState={(value) => {
-              setVoice(value)
-              value === "Disconnected"
-                ? callbacks.onVoiceDisconnect?.()
-                : callbacks.onVoiceConnect?.()
-            }}
+            level={voiceLevel}
+            detail={voiceDetail}
+            lines={voiceLines}
+            onToggle={voice === "Disconnected" || voice === "Permission error" || voice === "Connection error" ? startVoice : stopVoice}
+            onStop={stopVoice}
           />
+          {musicSrc && <audio ref={musicRef} className="visually-hidden" src={musicSrc} loop />}
         </div>
         <aside className="desktop-inspector desktop-only">{inspector}</aside>
       </div>
       <Timeline
+        project={project}
+        thumbnails={thumbnails}
+        waveform={waveform}
         currentTime={currentTime}
         zoom={zoom}
         onSeek={seek}
         onZoom={setZoom}
       />
-      <button
-        className="demo-trigger desktop-only"
-        onClick={() => setDemoOpen((value) => !value)}
-      >
-        Demo states
-      </button>
-      {demoOpen && (
-        <DemoMenu
-          phase={phase}
-          voice={voice}
-          onPhase={setPhase}
-          onVoice={setVoice}
-          onClose={() => setDemoOpen(false)}
-        />
-      )}
       {moreOpen && (
         <MoreSheet
-          onTool={(tool) => {
-            if (tool === "transcript") setDemoOpen(true)
-            else changeTool(tool)
-          }}
+          onTool={changeTool}
           onClose={() => setMoreOpen(false)}
         />
       )}
       {exportOpen && (
         <ExportDialog
           state={exportState}
-          onState={(state) => {
-            setExportState(state)
-            if (state === "processing") callbacks.onExport?.("mp4")
-          }}
+          progress={project?.jobs.export.progress ?? 0}
+          error={exportError || project?.jobs.export.error || null}
+          downloadUrl={downloadUrl}
+          onBegin={beginExport}
           onClose={() => setExportOpen(false)}
         />
       )}

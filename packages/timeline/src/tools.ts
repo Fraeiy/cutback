@@ -323,6 +323,8 @@ export function applyTool(
         return applyBatch(project, args, callId);
       case "apply_edit":
         return applyEdit(project, args, callId);
+      case "dismiss_proposal":
+        return dismissProposal(project, args, callId);
       case "undo_edit":
         return undoEdit(project, callId);
       case "redo_edit":
@@ -333,6 +335,8 @@ export function applyTool(
         return setAspect(project, args, callId);
       case "set_audio_mix":
         return setAudioMix(project, args, callId);
+      case "remove_music":
+        return removeMusic(project, callId);
       case "preview_segment":
         return previewSegment(project, args, callId);
       case "export_video":
@@ -672,6 +676,24 @@ function applyEdit(project: Project, args: Record<string, unknown>, callId: stri
     { status: "applied", proposal_id: proposal.id, summary, revision: project.revision },
     false,
   );
+}
+
+function dismissProposal(project: Project, args: Record<string, unknown>, callId: string | undefined): ToolOutcome {
+  const proposalId = asString(args.proposal_id);
+  const proposal = project.proposals.find((item) => item.id === proposalId);
+  if (!proposal) return finish(project, callId, { status: "error", error: "That proposal does not exist." }, true);
+  proposal.status = "rejected";
+  project.highlight = null;
+  touch(project);
+  return finish(project, callId, { status: "dismissed", proposal_id: proposal.id, summary: "Proposal dismissed." }, false);
+}
+
+function removeMusic(project: Project, callId: string | undefined): ToolOutcome {
+  if (!project.music) return finish(project, callId, { status: "error", error: "There is no background music to remove." }, true);
+  project.music = null;
+  project.revision += 1;
+  touch(project);
+  return finish(project, callId, { status: "applied", summary: "Background music removed.", revision: project.revision }, false);
 }
 
 function undoEdit(project: Project, callId: string | undefined): ToolOutcome {
