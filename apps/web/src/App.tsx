@@ -324,6 +324,7 @@ export function VideoPreview({
   onSeek,
   onRatio,
   onMode,
+  mediaSrc,
 }: {
   currentTime: number
   playing: boolean
@@ -337,9 +338,20 @@ export function VideoPreview({
   onSeek: (value: number) => void
   onRatio: (ratio: string) => void
   onMode: (mode: "original" | "edited") => void
+  mediaSrc?: string | null
 }) {
   const stageRef = useRef<HTMLDivElement>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
   const [muted, setMuted] = useState(false)
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || !mediaSrc) return
+    video.muted = muted
+    if (playing) void video.play().catch(() => undefined)
+    else video.pause()
+    video.currentTime = currentTime
+  }, [currentTime, mediaSrc, muted, playing])
   const active =
     [...sentences]
       .reverse()
@@ -379,10 +391,21 @@ export function VideoPreview({
         ref={stageRef}
         className={`video-stage ratio-${ratio.replace(":", "-").toLowerCase()}`}
       >
-        <img
-          src={mediaImage}
-          alt="Creator recording a video in a home studio"
-        />
+        {mediaSrc ? (
+          <video
+            ref={videoRef}
+            src={mediaSrc}
+            muted={muted}
+            playsInline
+            onTimeUpdate={(event) => onSeek(event.currentTarget.currentTime)}
+            aria-label="Uploaded video preview"
+          />
+        ) : (
+          <img
+            src={mediaImage}
+            alt="Creator recording a video in a home studio"
+          />
+        )}
         {showGuides && <div className="safe-guides" />}
         {mode === "edited" && (
           <div
@@ -1409,6 +1432,7 @@ export function EditorShell({ callbacks = {} }: { callbacks?: EditorCallbacks })
   const [demoOpen, setDemoOpen] = useState(false)
   const [phase, setPhase] = useState<ProjectPhase>("ready")
   const [previewMode, setPreviewMode] = useState<"original" | "edited">("edited")
+  const [mediaSrc, setMediaSrc] = useState<string | null>(null)
 
   useEffect(() => {
     if (!playing) return
@@ -1460,6 +1484,10 @@ export function EditorShell({ callbacks = {} }: { callbacks?: EditorCallbacks })
     if (tool === "audio") setMobileTab("audio")
   }
   const upload = (file: File) => {
+    setMediaSrc((previous) => {
+      if (previous) URL.revokeObjectURL(previous)
+      return URL.createObjectURL(file)
+    })
     callbacks.onUpload?.(file)
     setPhase("uploading")
     demoServices.after(900, () => setPhase("transcribing"))
@@ -1572,6 +1600,7 @@ export function EditorShell({ callbacks = {} }: { callbacks?: EditorCallbacks })
             captionPosition={captionPosition}
             showGuides={guides}
             mode={previewMode}
+            mediaSrc={mediaSrc}
             onPlay={() => setPlaying((value) => !value)}
             onSeek={seek}
             onRatio={(value) => {
