@@ -33,8 +33,15 @@ function headers(json = false): Headers {
 }
 
 async function parse<T>(response: Response): Promise<T> {
-  const payload = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(payload.error || `Request failed (${response.status}).`);
+  const payload = (await response.json().catch(() => ({}))) as T & {
+    error?: string;
+    // The tools endpoint reports failures inside result, so a failed export
+    // arrives as HTTP 500 with a readable message nested one level down.
+    result?: { error?: string; status?: string };
+  };
+  if (!response.ok) {
+    throw new Error(payload.error || payload.result?.error || `Request failed (${response.status}).`);
+  }
   return payload;
 }
 

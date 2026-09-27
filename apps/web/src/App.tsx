@@ -511,12 +511,16 @@ export function VideoPreview({
         </div>
       </div>
       <div className="preview-canvas-area">
-      <div className="video-stage">
+      {/* --canvas-ratio must live on the stage: the container-query sizing rule
+          reads it here, and custom properties only inherit downward, so putting
+          it on the frame below left the stage with an invalid width and height
+          and the preview collapsed. */}
+      <div className="video-stage" style={{ "--canvas-ratio": canvasRatio } as React.CSSProperties}>
         {/* The frame is sized to the clip's own aspect ratio so the video fills
             it exactly. Overlays are positioned inside the frame, which keeps
             captions and guides on the picture rather than in the letterbox. */}
         <div
-          style={{ "--canvas-ratio": canvasRatio, "--caption-y": captionPositionY } as React.CSSProperties}
+          style={{ "--caption-y": captionPositionY } as React.CSSProperties}
           ref={stageRef}
           className={`video-frame ratio-${ratio.replace(":", "-").toLowerCase()}`}
         >
@@ -599,6 +603,11 @@ export function EditProposal({
   onDismiss: () => void
 }) {
   if (!proposal || state === "dismissed") return null
+  // Derived from the proposal rather than a fixed number, so a 0.4s cut does
+  // not claim to be 4.2s in front of a judge.
+  const op = proposal.op
+  const removedMs = op && op.type === "cut" ? Math.max(0, op.endMs - op.startMs) : null
+  const removedLabel = removedMs === null ? "this section" : `${(removedMs / 1000).toFixed(1)}s`
   return (
     <div className={`proposal ${state}`}>
       <span className="proposal-icon">
@@ -610,8 +619,8 @@ export function EditProposal({
           {state === "applying"
             ? "Applying edit…"
             : state === "applied"
-              ? "Edit applied · 4.2 seconds removed"
-              : "Remove 4.2 seconds"}
+              ? `Edit applied · removed ${removedLabel}`
+              : `Remove ${removedLabel}`}
         </span>
       </div>
       {state === "pending" && (
@@ -658,7 +667,10 @@ function MobileTimeline({
             style={{ objectPosition: `${18 + frame * 16}% 44%` }}
           />
         ))}
-        <i style={{ left: `calc(112px + (100% - 112px) * ${duration > 0 ? Math.min(1, currentTime / duration) : 0})` }} />
+        {/* The tap handler below maps across the full button width, so the
+            playhead must too. The 112px track-label gutter belongs to the
+            desktop timeline and put this marker a third of a phone screen off. */}
+        <i style={{ left: `${(duration > 0 ? Math.min(1, currentTime / duration) : 0) * 100}%` }} />
         <button
           aria-label="Seek compact timeline"
           onClick={(event) => {
@@ -1714,8 +1726,13 @@ export function EditorShell() {
   // clip and laid end to end to match the flattened timeline.
   const clips = project?.clips ?? []
   const activeClip = clips.find((clip) => clip.id === activeClipId) ?? clips[0] ?? null
+  // Cache-bust on the clip's own identity, not the project's updatedAt. Every
+  // tool call and every playback ping touches updatedAt, so keying on it made
+  // each caption tweak re-download the video, reset the playhead to zero, and
+  // regenerate every thumbnail with a fresh ffmpeg waveform pass.
+  const mediaVersion = activeClip ? `${activeClip.media.storedName}-${activeClip.media.bytes}` : "";
   const mediaSrc = activeClip
-    ? `/api/projects/${project!.id}/media?clip=${encodeURIComponent(activeClip.id)}&v=${encodeURIComponent(project!.updatedAt)}`
+    ? `/api/projects/${project!.id}/media?clip=${encodeURIComponent(activeClip.id)}&v=${encodeURIComponent(mediaVersion)}`
     : null
   const musicSrc = project?.music ? "/api/projects/" + project.id + "/music?v=" + encodeURIComponent(project.updatedAt) : null
   // Flat view of every clip's frames, for the strips that span the whole timeline.
@@ -1730,7 +1747,7 @@ export function EditorShell() {
     let alive = true
     void Promise.all(
       clips.map(async (clip) => {
-        const src = `/api/projects/${project.id}/media?clip=${encodeURIComponent(clip.id)}&v=${encodeURIComponent(project.updatedAt)}`
+        const src = `/api/projects/${project.id}/media?clip=${encodeURIComponent(clip.id)}&v=${encodeURIComponent(`${clip.media.storedName}-${clip.media.bytes}`)}`
         const [frames, wave] = await Promise.all([
           createThumbnails(src, clip.media.durationMs / 1000).catch(() => []),
           api.waveform(project.id, clip.id).then((result) => result.peaks).catch(() => []),
@@ -1755,7 +1772,9 @@ export function EditorShell() {
     return () => {
       alive = false
     }
-  }, [project?.id, project?.updatedAt, clips.length])
+    // Keyed on the clips themselves, so an edit does not re-run six video seeks
+    // and an ffmpeg loudness pass per clip.
+  }, [project?.id, clips.map((clip) => `${clip.id}:${clip.media.bytes}`).join("|")])
 
   useEffect(() => {
     const video = videoRef.current
@@ -1962,7 +1981,11 @@ export function EditorShell() {
     const current = projectRef.current
     if (!current) return
     await api.playback(current.id, {
-      sourceTimeMs: localToOutputMs((videoRef.current?.currentTime ?? 0) * 1000, activeClipId) ?? activeSourceMs,
+      // Must be a source time: the target resolver compares this against
+      // sentence source bounds. The output time of the edited timeline is a
+      // different value once anything has been cut, and feeding that here made
+      // "remove that" land on the wrong sentence.
+      sourceTimeMs: activeSourceMs,
       outputTimeMs: currentTime * 1000,
       selectedWordIds,
       capturedAt: new Date().toISOString(),
@@ -2154,7 +2177,10 @@ export function EditorShell() {
         onProject: remember,
         onSeek: (outputMs) => seek(outputMs / 1000),
         snapshot: () => ({
-          sourceTimeMs: (videoRef.current?.currentTime ?? 0) * 1000,
+          // The video element reports time within its own file, so add the
+          // clip's offset to get a position on the combined timeline. Without
+          // this, "remove that" on a second clip pointed at the wrong place.
+          sourceTimeMs: activeSourceMs,
           outputTimeMs: currentTime * 1000,
           selectedWordIds,
         }),
