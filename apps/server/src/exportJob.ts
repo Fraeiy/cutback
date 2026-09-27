@@ -36,7 +36,12 @@ export async function renderExport(project: Project, onProgress: (progress: numb
   if (project.edit.captions.enabled) {
     if (!font) throw new Error("Captions are on, but no font was found to burn them into the export.");
     subtitlePath = path.join(dir, "captions.ass");
-    await writeFile(subtitlePath, buildAss(view.cues, project.edit.captions, font.family), "utf8");
+    // Give libass the real output geometry so positionY means the same thing in
+    // the burned file as it does in the preview, at any aspect ratio.
+    const outputSize = view.crop
+      ? { width: view.crop.outWidth, height: view.crop.outHeight }
+      : { width: clips[0].media.width, height: clips[0].media.height };
+    await writeFile(subtitlePath, buildAss(view.cues, project.edit.captions, font.family, outputSize), "utf8");
   }
   const args = buildExportArgs({
     clips: exportClips,

@@ -80,13 +80,24 @@ function quoteMatches(project: Project, quote: string): Array<{ startMs: number;
   if (needle.length === 0) return [];
   const matches: Array<{ startMs: number; endMs: number; sentence: Sentence; label: string }> = [];
   for (const sentence of project.transcript?.sentences ?? []) {
-    const words = wordsOf(project, sentence);
-    const tokens = words.map((word) => normalize(word.text)).filter(Boolean);
+    // One entry per token, not per word: normalize collapses internal
+    // whitespace, so a mis-segmented word holding "cut this" would otherwise
+    // contribute two tokens to `tokens` but one element to the slice, shifting
+    // every later index in the sentence.
+    const entries: Array<{ word: Word; token: string }> = [];
+    for (const word of wordsOf(project, sentence)) {
+      for (const token of normalize(word.text).split(" ").filter(Boolean)) {
+        entries.push({ word, token });
+      }
+    }
+    const tokens = entries.map((entry) => entry.token);
     if (tokens.length === 0) continue;
     for (let i = 0; i <= tokens.length - needle.length; i += 1) {
       const window = tokens.slice(i, i + needle.length).join(" ");
       if (window === needle.join(" ")) {
-        const slice = words.filter((word) => normalize(word.text).length > 0).slice(i, i + needle.length);
+        // `entries` is filtered in lockstep with `tokens`, so index i lines up with
+        // the matched window; the words keep their real ids and timings.
+        const slice = entries.slice(i, i + needle.length).map((entry) => entry.word);
         matches.push({
           startMs: slice[0].startMs,
           endMs: slice[slice.length - 1].endMs,

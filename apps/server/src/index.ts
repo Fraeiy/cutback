@@ -544,7 +544,10 @@ app.post("/api/projects/:id/tools/:name", async (request, reply) => {
   const body = (request.body ?? {}) as { callId?: string; arguments?: Record<string, unknown> };
   const callId = typeof body.callId === "string" ? body.callId.slice(0, 120) : undefined;
   try {
-    return await withProjectLock(id, async () => {
+    // The lock is released before rendering. Holding it for the whole ffmpeg run
+    // meant every other write for this project - including a voice tool call -
+    // queued behind the render with no timeout of its own.
+    const stage = await withProjectLock(id, async () => {
       const project = await loadProject(id);
       if (
         params.name === "export_video" &&
@@ -555,87 +558,128 @@ app.post("/api/projects/:id/tools/:name", async (request, reply) => {
       }
       const outcome = applyTool(project, params.name, body.arguments ?? {}, callId);
       const batchWantsExport = params.name === "apply_instruction_batch" && outcome.result.export_requested === true;
-      if ((params.name === "export_video" || batchWantsExport) && outcome.result.status !== "error" && !outcome.duplicate && (params.name === "export_video" ? outcome.result.status === "export_requested" : true)) {
-        project.jobs.export = {
-          status: "running",
+      const wantsExport =
+        (params.name === "export_video" || batchWantsExport) &&
+        outcome.result.status !== "error" &&
+        !outcome.duplicate &&
+        (params.name === "export_video" ? outcome.result.status === "export_requested" : true);
+
+      if (!wantsExport) {
+        await saveProject(outcome.project);
+        return {
+          kind: "done" as const,
+          body: {
+            ok: !outcome.isError,
+            isError: outcome.isError,
+            duplicate: outcome.duplicate,
+            result: outcome.result,
+            project: sendProject(outcome.project),
+          },
+        };
+      }
+
+      project.jobs.export = {
+        status: "running",
+        error: null,
+        progress: 0.02,
+        updatedAt: new Date().toISOString(),
+        file: null,
+        bytes: null,
+        revision: project.revision,
+      };
+      await saveProject(project);
+      // Render from a snapshot taken at request time. Re-reading the project on
+      // every progress tick would instead re-save a stale copy and wipe any edit
+      // made while the render was in flight.
+      return {
+        kind: "export" as const,
+        snapshot: structuredClone(project),
+        callId,
+        batch: params.name === "apply_instruction_batch",
+        earlier: typeof outcome.result.summary === "string" ? outcome.result.summary : "",
+        completed: outcome.result.completed,
+      };
+    });
+
+    if (stage.kind === "done") return stage.body;
+
+    // Outside the lock. Progress updates re-read the project and touch only the
+    // export job, so concurrent edits are preserved.
+    const reportProgress = async (progress: number) => {
+      await withProjectLock(id, async () => {
+        const current = await loadProject(id);
+        if (current.jobs.export.status !== "running") return;
+        current.jobs.export.progress = progress;
+        current.jobs.export.updatedAt = new Date().toISOString();
+        await saveProject(current);
+      }).catch(() => undefined);
+    };
+
+    try {
+      const bytes = await renderExport(stage.snapshot, reportProgress);
+      const exportStoredName = usesBlobStorage()
+        ? projectBlobPath(stage.snapshot.id, "export/export.mp4")
+        : "export.mp4";
+      const captionsStoredName = usesBlobStorage()
+        ? projectBlobPath(stage.snapshot.id, "export/captions.srt")
+        : "captions.srt";
+      if (usesBlobStorage()) {
+        await uploadPrivateFile(path.join(projectDir(stage.snapshot.id), "export.mp4"), exportStoredName, "video/mp4");
+        await uploadPrivateFile(path.join(projectDir(stage.snapshot.id), "captions.srt"), captionsStoredName, "application/x-subrip");
+      }
+      const result = {
+        status: "completed",
+        summary: stage.batch && stage.earlier ? `${stage.earlier} Then export ready.` : "Export ready.",
+        completed: stage.completed,
+        revision: stage.snapshot.revision,
+        bytes,
+        download_path: `/api/projects/${stage.snapshot.id}/export`,
+      };
+      const final = await withProjectLock(id, async () => {
+        const current = await loadProject(id);
+        current.jobs.export = {
+          status: "completed",
           error: null,
-          progress: 0.02,
+          progress: 1,
+          updatedAt: new Date().toISOString(),
+          file: exportStoredName,
+          bytes,
+          revision: stage.snapshot.revision,
+        };
+        if (stage.callId) {
+          current.appliedCalls[stage.callId] = { at: new Date().toISOString(), isError: false, result };
+        }
+        await saveProject(current);
+        return sendProject(current);
+      });
+      return { ok: true, isError: false, duplicate: false, result, project: final };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Export failed.";
+      const result = stage.batch
+        ? {
+            status: "partial",
+            summary: stage.earlier ? `${stage.earlier} Then export failed: ${message}` : message,
+            completed: stage.completed,
+            failed: { tool: "export_video", error: message },
+          }
+        : { status: "error", error: message };
+      const final = await withProjectLock(id, async () => {
+        const current = await loadProject(id);
+        current.jobs.export = {
+          status: "error",
+          error: message,
+          progress: 0,
           updatedAt: new Date().toISOString(),
           file: null,
           bytes: null,
-          revision: project.revision,
+          revision: stage.snapshot.revision,
         };
-        await saveProject(project);
-        try {
-          const bytes = await renderExport(project, async (progress) => {
-            project.jobs.export.progress = progress;
-            project.jobs.export.updatedAt = new Date().toISOString();
-            await saveProject(project);
-          });
-          const exportStoredName = usesBlobStorage() ? projectBlobPath(project.id, "export/export.mp4") : "export.mp4";
-          const captionsStoredName = usesBlobStorage() ? projectBlobPath(project.id, "export/captions.srt") : "captions.srt";
-          if (usesBlobStorage()) {
-            await uploadPrivateFile(path.join(projectDir(project.id), "export.mp4"), exportStoredName, "video/mp4");
-            await uploadPrivateFile(path.join(projectDir(project.id), "captions.srt"), captionsStoredName, "application/x-subrip");
-          }
-          const earlier = typeof outcome.result.summary === "string" ? outcome.result.summary : "";
-          const result = {
-            status: "completed",
-            summary: params.name === "apply_instruction_batch" && earlier ? `${earlier} Then export ready.` : "Export ready.",
-            completed: outcome.result.completed,
-            revision: project.revision,
-            bytes,
-            download_path: `/api/projects/${project.id}/export`,
-          };
-          project.jobs.export = {
-            status: "completed",
-            error: null,
-            progress: 1,
-            updatedAt: new Date().toISOString(),
-            file: exportStoredName,
-            bytes,
-            revision: project.revision,
-          };
-          if (callId) {
-            project.appliedCalls[callId] = { at: new Date().toISOString(), isError: false, result };
-          }
-          await saveProject(project);
-          return { ok: true, isError: false, duplicate: false, result, project: sendProject(project) };
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Export failed.";
-          const earlier = typeof outcome.result.summary === "string" ? outcome.result.summary : "";
-          const result =
-            params.name === "apply_instruction_batch"
-              ? {
-                  status: "partial",
-                  summary: earlier ? `${earlier} Then export failed: ${message}` : message,
-                  completed: outcome.result.completed,
-                  failed: { tool: "export_video", error: message },
-                }
-              : { status: "error", error: message };
-          project.jobs.export = {
-            status: "error",
-            error: message,
-            progress: 0,
-            updatedAt: new Date().toISOString(),
-            file: null,
-            bytes: null,
-            revision: project.revision,
-          };
-          if (callId) delete project.appliedCalls[callId];
-          await saveProject(project);
-          return reply.code(500).send({ ok: false, isError: true, duplicate: false, result, project: sendProject(project) });
-        }
-      }
-      await saveProject(outcome.project);
-      return {
-        ok: !outcome.isError,
-        isError: outcome.isError,
-        duplicate: outcome.duplicate,
-        result: outcome.result,
-        project: sendProject(outcome.project),
-      };
-    });
+        if (stage.callId) delete current.appliedCalls[stage.callId];
+        await saveProject(current);
+        return sendProject(current);
+      });
+      return reply.code(500).send({ ok: false, isError: true, duplicate: false, result, project: final });
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Tool failed.";
     return reply.code(400).send({ error: message });

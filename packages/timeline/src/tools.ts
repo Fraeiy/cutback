@@ -68,13 +68,21 @@ function remembered(project: Project, callId: string | undefined): ToolOutcome |
   return { project, result: { ...prior.result, duplicate: true }, isError: prior.isError, duplicate: true };
 }
 
+/**
+ * Read-only tools must not be memoised. `read_project_context` returns the
+ * whole sentence list, and the agent calls it routinely, so storing each result
+ * grew project.json to megabytes - rewritten in full on every request.
+ */
+const MEMOISED_TOOLS = new Set(["read_project_context", "find_transcript_segment", "preview_segment"]);
+
 function finish(
   project: Project,
   callId: string | undefined,
   result: Record<string, unknown>,
   isError: boolean,
+  tool?: string,
 ): ToolOutcome {
-  if (callId) {
+  if (callId && !(tool && MEMOISED_TOOLS.has(tool))) {
     project.appliedCalls[callId] = { at: new Date().toISOString(), isError, result };
     const ids = Object.keys(project.appliedCalls);
     if (ids.length > 200) delete project.appliedCalls[ids[0]];
@@ -400,7 +408,7 @@ export function applyTool(
   try {
     switch (name) {
       case "read_project_context":
-        return finish(project, callId, publicContext(project), false);
+        return finish(project, callId, publicContext(project), false, name);
       case "find_transcript_segment":
         return findSegment(project, args, callId, false);
       case "propose_cut":
@@ -453,9 +461,11 @@ function findSegment(
   args: Record<string, unknown>,
   callId: string | undefined,
   highlightPending: boolean,
+  memoise = true,
 ): ToolOutcome {
+  const tool = "find_transcript_segment";
   const blocked = requireReady(project);
-  if (blocked) return finish(project, callId, { status: "error", error: blocked }, true);
+  if (blocked) return finish(project, callId, { status: "error", error: blocked }, true, tool);
   const found = resolveTarget(project, targetFromArgs(args));
   if (!found.ok) {
     project.highlight = null;

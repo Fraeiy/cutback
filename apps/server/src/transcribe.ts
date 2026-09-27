@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
 import type { Sentence, Transcript, Word } from "../../../packages/timeline/src/index.js";
 
 const API = "https://api.assemblyai.com";
@@ -21,13 +21,19 @@ function authHeaders(apiKey: string): HeadersInit {
   return { authorization: apiKey };
 }
 
+// `duplex` is required by undici for streaming request bodies but is missing from the
+// DOM-flavoured RequestInit that ships with our @types/node.
+type StreamingRequestInit = RequestInit & { duplex: "half" };
+
 export async function uploadMedia(filePath: string, apiKey: string): Promise<string> {
-  const bytes = await readFile(filePath);
-  const response = await fetch(`${API}/v2/upload`, {
+  // Stream the file straight from disk: a 200MB video must never be buffered in memory.
+  const init: StreamingRequestInit = {
     method: "POST",
     headers: authHeaders(apiKey),
-    body: bytes,
-  });
+    body: createReadStream(filePath) as unknown as BodyInit,
+    duplex: "half",
+  };
+  const response = await fetch(`${API}/v2/upload`, init);
   if (!response.ok) {
     throw new Error(`AssemblyAI upload failed (${response.status}).`);
   }

@@ -69,12 +69,23 @@ function assEscape(text: string): string {
 }
 
 /** Styled subtitle file used by preview-equivalent MP4 rendering. */
-export function buildAss(cues: CaptionCue[], style: CaptionStyle, fontName: string): string {
+export function buildAss(
+  cues: CaptionCue[],
+  style: CaptionStyle,
+  fontName: string,
+  output?: { width: number; height: number },
+): string {
   // Anchor all captions from the top so the normalized preview position maps
-  // directly to the same vertical location in libass.
+  // directly to the same vertical location in libass. PlayRes has to be the
+  // real output size: libass scales script space onto the video, so a hardcoded
+  // 1080 put a vertical 1920-tall export's captions near the middle instead of
+  // near the bottom.
+  const playResX = Math.max(2, Math.round(output?.width ?? 1920));
+  const playResY = Math.max(2, Math.round(output?.height ?? 1080));
   const alignment = 8;
-  const marginV = Math.round(style.positionY * 1080);
-  const header = `[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,${fontName},${Math.round(48 * style.fontScale)},${hexToAss(style.color)},${hexToAss(style.highlightColor)},&H00000000,&H99000000,${style.preset === "bold" ? -1 : 0},0,0,0,100,100,0,0,3,1,0,${alignment},60,60,${marginV},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
+  const marginV = Math.round(style.positionY * playResY);
+  const fontSize = Math.max(8, Math.round((playResY / 1080) * 48 * style.fontScale));
+  const header = `[Script Info]\nScriptType: v4.00+\nPlayResX: ${playResX}\nPlayResY: ${playResY}\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,${fontName},${fontSize},${hexToAss(style.color)},${hexToAss(style.highlightColor)},&H00000000,&H99000000,${style.preset === "bold" ? -1 : 0},0,0,0,100,100,0,0,3,1,0,${alignment},60,60,${marginV},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
   const lines: string[] = [];
   for (const cue of cues) {
     if (!style.wordHighlight || cue.words.length === 0) {
