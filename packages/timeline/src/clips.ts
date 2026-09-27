@@ -33,11 +33,6 @@ export function clipAt(clips: Clip[], sourceMs: number): Clip | null {
   return clips.length > 0 ? clips[clips.length - 1] : null;
 }
 
-export function findClip(clips: Clip[], clipId: string | null | undefined): Clip | null {
-  if (!clipId) return null;
-  return clips.find((clip) => clip.id === clipId) ?? null;
-}
-
 /**
  * Break a source range into per-clip pieces so no piece crosses a clip
  * boundary. Export needs this: each piece maps to exactly one input file.

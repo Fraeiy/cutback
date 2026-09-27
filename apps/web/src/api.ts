@@ -128,11 +128,12 @@ export const api = {
       headers: headers(true),
       body: JSON.stringify(playback),
     }).then((response) => parse<{ ok: boolean }>(response)),
-  tool: (id: string, name: string, args: Record<string, unknown>, callId?: string) =>
+  tool: (id: string, name: string, args: Record<string, unknown>, callId?: string, signal?: AbortSignal) =>
     fetch(`/api/projects/${id}/tools/${name}`, {
       method: "POST",
       headers: headers(true),
       body: JSON.stringify({ callId, arguments: args }),
+      signal,
     }).then((response) => parse<ToolResponse>(response)),
   voiceToken: () =>
     fetch("/api/voice/token", { method: "POST", headers: headers() }).then((response) =>

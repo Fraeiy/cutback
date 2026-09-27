@@ -175,6 +175,10 @@ function ratioFromProject(project: PresentedProject | null): string {
   return mode === "wide" ? "16:9" : mode === "square" ? "1:1" : mode === "vertical" ? "9:16" : "Original"
 }
 
+function ratioLabel(ratio: string): string {
+  return ratio === "Original" ? "Original frame" : `${ratio} frame`
+}
+
 function modeFromRatio(ratio: string): "original" | "wide" | "square" | "vertical" {
   return ratio === "16:9" ? "wide" : ratio === "1:1" ? "square" : ratio === "9:16" ? "vertical" : "original"
 }
@@ -199,6 +203,7 @@ function Brand() {
 export function EditorHeader({
   title,
   saveStatus,
+  statusTone,
   onExport,
   onTitle,
   onUndo,
@@ -209,6 +214,8 @@ export function EditorHeader({
 }: {
   title: string
   saveStatus: string
+  /** Drives the indicator colour: settled, working, or failed. */
+  statusTone: "ok" | "busy" | "error"
   onExport: () => void
   onTitle: (title: string) => void
   onUndo: () => void
@@ -230,11 +237,16 @@ export function EditorHeader({
             onChange={(event) => onTitle(event.target.value)}
           />
         </label>
-        <span className="saved">
+        <span className={`saved tone-${statusTone}`} role="status" aria-live="polite">
           <i />
           {saveStatus}
         </span>
-        
+      </div>
+      {/* Every status message used to live in the desktop-only header, so a
+          phone showed no feedback at all for uploads, transcription failures or
+          export errors. This is the mobile equivalent. */}
+      <div className="mobile-only mobile-status" role="status" aria-live="polite">
+        {saveStatus}
       </div>
       <div className="mobile-only mobile-head">
         <button
@@ -416,9 +428,6 @@ export function VideoPreview({
   const stageRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const [muted, setMuted] = useState(false)
-  // Pointer-driven tilt. Kept in state-free refs and written straight to the
-  // element so pointer movement never triggers a React render.
-  const tiltRef = useRef<{ x: number; y: number; active: boolean }>({ x: 0, y: 0, active: false })
 
   useEffect(() => {
     const frame = stageRef.current
@@ -429,14 +438,12 @@ export function VideoPreview({
       if (rect.width === 0 || rect.height === 0) return
       const px = (event.clientX - rect.left) / rect.width - 0.5
       const py = (event.clientY - rect.top) / rect.height - 0.5
-      tiltRef.current = { x: px * 2, y: py * 2, active: true }
       frame.style.setProperty("--tilt-x", `${(-py * MAX).toFixed(2)}deg`)
       frame.style.setProperty("--tilt-y", `${(px * MAX).toFixed(2)}deg`)
       frame.style.setProperty("--gloss-x", `${((px + 0.5) * 100).toFixed(1)}%`)
       frame.style.setProperty("--gloss-y", `${((py + 0.5) * 100).toFixed(1)}%`)
     }
     const onLeave = () => {
-      tiltRef.current.active = false
       frame.style.setProperty("--tilt-x", "0deg")
       frame.style.setProperty("--tilt-y", "0deg")
     }
@@ -498,16 +505,10 @@ export function VideoPreview({
               After
             </button>
           </div>
-          <select
-            aria-label="Frame aspect ratio"
-            value={ratio}
-            onChange={(event) => onRatio(event.target.value)}
-          >
-            <option value="16:9">Frame: 16:9</option>
-            <option value="Original">Frame: Original</option>
-            <option value="1:1">Frame: 1:1</option>
-            <option value="9:16">Frame: 9:16</option>
-          </select>
+          {/* The frame-ratio control used to sit here as a second, duplicate
+              dropdown. Aspect ratio now lives only in the Framing panel, so
+              there is one place to set it rather than two that disagree. */}
+          <span className="toolbar-frame">{ratioLabel(ratio)}</span>
         </div>
       </div>
       <div className="preview-canvas-area">
@@ -885,7 +886,7 @@ export function CaptionInspector({
       <fieldset>
         <legend>Caption style</legend>
         <div className="preset-grid">
-          {(["clean", "highlight"] as CaptionStyle[]).map((name) => (
+          {(["clean", "bold", "highlight"] as CaptionStyle[]).map((name) => (
             <Preset
               key={name}
               name={name}
@@ -906,39 +907,44 @@ export function CaptionInspector({
         />
         <output>{size}</output>
       </label>
+      {/* One fieldset for both colour rows: two legends and two blocks of
+          vertical margin were the main reason this panel needed to scroll. */}
       <fieldset>
-        <legend>Text colour</legend>
-        <div className="swatches">
-          {["white", "slate", "black", "cream", "pink", "blue"].map(
-            (color) => (
-              <button
-                key={color}
-                className={`swatch ${color} ${textColor === color ? "selected" : ""}`}
-                aria-label={`${color} text`}
-                aria-pressed={textColor === color}
-                onClick={() => onTextColor(color)}
-              />
-            ),
-          )}
+        <legend>Colours</legend>
+        <div className="colour-row">
+          <span>Text</span>
+          <div className="swatches">
+            {["white", "slate", "black", "cream", "pink", "blue"].map(
+              (color) => (
+                <button
+                  key={color}
+                  className={`swatch ${color} ${textColor === color ? "selected" : ""}`}
+                  aria-label={`${color} text`}
+                  aria-pressed={textColor === color}
+                  onClick={() => onTextColor(color)}
+                />
+              ),
+            )}
+          </div>
+        </div>
+        <div className="colour-row">
+          <span>Highlight</span>
+          <div className="swatches">
+            {["mint", "yellow", "orange", "rose", "violet", "blue"].map(
+              (color) => (
+                <button
+                  key={color}
+                  className={`swatch ${color} ${highlightColor === color ? "selected" : ""}`}
+                  aria-label={`${color} highlight`}
+                  aria-pressed={highlightColor === color}
+                  onClick={() => onHighlightColor(color)}
+                />
+              ),
+            )}
+          </div>
         </div>
       </fieldset>
-      <fieldset>
-        <legend>Highlight</legend>
-        <div className="swatches">
-          {["mint", "yellow", "orange", "rose", "violet", "blue"].map(
-            (color) => (
-              <button
-                key={color}
-                className={`swatch ${color} ${highlightColor === color ? "selected" : ""}`}
-                aria-label={`${color} highlight`}
-                aria-pressed={highlightColor === color}
-                onClick={() => onHighlightColor(color)}
-              />
-            ),
-          )}
-        </div>
-      </fieldset>
-      <fieldset>
+      <fieldset className="tight">
         <legend>Position</legend>
         <div className="segmented three">
           {["Top", "Middle", "Bottom"].map((item) => (
@@ -1441,6 +1447,13 @@ export function ExportDialog({
   onBegin: () => void
   onClose: () => void
 }) {
+  const dialogRef = useRef<HTMLElement>(null)
+  // Move focus into the dialog when it opens so keyboard users are not left
+  // tabbing around the editor behind it.
+  useEffect(() => {
+    const first = dialogRef.current?.querySelector<HTMLElement>("button, a[href], input, select")
+    first?.focus()
+  }, [])
   return (
     <div
       className="modal-backdrop"
@@ -1452,6 +1465,29 @@ export function ExportDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="export-title"
+        ref={dialogRef}
+        // aria-modal alone is a claim, not a behaviour: without this, Tab walked
+        // through the whole editor behind the dialog.
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            onClose()
+            return
+          }
+          if (event.key !== "Tab") return
+          const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), a[href], input, select, [tabindex]:not([tabindex="-1"])',
+          )
+          if (!focusable || focusable.length === 0) return
+          const first = focusable[0]
+          const last = focusable[focusable.length - 1]
+          if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault()
+            first.focus()
+          } else if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault()
+            last.focus()
+          }
+        }}
       >
         <button
           className="modal-close icon-btn"
@@ -1612,6 +1648,7 @@ export function EditorShell() {
   const [health, setHealth] = useState<Health | null>(null)
   const [project, setProject] = useState<PresentedProject | null>(null)
   const [title, setTitle] = useState("Untitled project")
+  const [statusTone, setStatusTone] = useState<"ok" | "busy" | "error">("ok")
   const [saveStatus, setSaveStatus] = useState("Loading…")
   const [activeTool, setActiveTool] = useState<Tool>("transcript")
   const [mobileTab, setMobileTab] = useState<"edit" | "captions" | "audio">("edit")
@@ -1644,14 +1681,22 @@ export function EditorShell() {
   const statusTimerRef = useRef<number | null>(null)
   /** Clip-local time to apply once a newly loaded clip is ready. */
   const pendingSeekRef = useRef<number | null>(null)
+  /** The output segment the preview is currently inside, for playback stepping. */
+  const segmentRef = useRef<string | null>(null)
   /** Whether playback should resume after a clip switch. */
   const pendingPlayRef = useRef(false)
 
-  const setStatus = useCallback((message: string, restore = true) => {
+  // The tone lets the header indicator show whether the app is settled, working
+  // or broken, instead of always reading "Saved" regardless of what happened.
+  const setStatus = useCallback((message: string, restore = true, tone?: "ok" | "busy" | "error") => {
     if (statusTimerRef.current) window.clearTimeout(statusTimerRef.current)
     setSaveStatus(message)
+    setStatusTone(tone ?? (restore ? "ok" : "error"))
     if (restore) {
-      statusTimerRef.current = window.setTimeout(() => setSaveStatus("Saved"), 4200)
+      statusTimerRef.current = window.setTimeout(() => {
+        setSaveStatus("Saved")
+        setStatusTone("ok")
+      }, 4200)
     }
   }, [])
 
@@ -1709,16 +1754,49 @@ export function EditorShell() {
       project?.jobs.export.status === "running" ||
       exportState === "processing"
     if (!project?.id || !shouldPoll) return
+    let failures = 0
     const timer = window.setInterval(() => {
-      void api.get(project.id).then(remember).catch(() => undefined)
+      void api.get(project.id)
+        .then((next) => {
+          failures = 0
+          remember(next)
+        })
+        .catch((error: Error) => {
+          // Swallowing this left the export spinner running forever whenever the
+          // server went away mid-render, with nothing to tell the creator.
+          failures += 1
+          if (failures === 3) {
+            setExportState("error")
+            setExportError(`Lost contact with the server: ${error.message}`)
+            setStatus("Lost contact with the server.", false)
+          }
+        })
     }, 850)
     return () => window.clearInterval(timer)
-  }, [exportState, project?.id, project?.jobs.export.status, project?.jobs.transcription.status, remember])
+  }, [exportState, project?.id, project?.jobs.export.status, project?.jobs.transcription.status, remember, setStatus])
+
+  // Reflect real background work in the header indicator, so "Saved" never sits
+  // there while a transcription or a render is still going.
+  useEffect(() => {
+    const transcribing = project?.jobs.transcription.status === "running"
+    const exporting = project?.jobs.export.status === "running" || exportState === "processing"
+    if (exporting) setStatus("Exporting…", true, "busy")
+    else if (transcribing) setStatus("Transcribing…", true, "busy")
+  }, [
+    project?.jobs.transcription.status,
+    project?.jobs.export.status,
+    project?.jobs.export.progress,
+    exportState,
+    setStatus,
+  ])
 
   useEffect(() => {
-    if (project?.jobs.transcription.status === "completed") setSaveStatus("Saved")
+    if (project?.jobs.transcription.status === "completed") {
+      setSaveStatus("Saved")
+      setStatusTone("ok")
+    }
     if (project?.jobs.transcription.status === "error")
-      setStatus(project.jobs.transcription.error || "Transcription failed.", false)
+      setStatus(project.jobs.transcription.error || "Transcription failed.", false, "error")
   }, [project?.jobs.transcription.error, project?.jobs.transcription.status, setStatus])
 
   // The preview can only play one file at a time, so it follows whichever clip
@@ -1819,23 +1897,20 @@ export function EditorShell() {
   const handleVideoReady = useCallback((video: HTMLVideoElement | null) => {
     videoRef.current = video
     // A clip switch reloads the element, so replay the seek it interrupted.
-    const pending = pendingSeekRef.current
-    if (video && pending !== null) {
-      pendingSeekRef.current = null
-      video.currentTime = pending / 1000
-      if (pendingPlayRef.current) {
-        pendingPlayRef.current = false
-        void video.play().catch(() => undefined)
-      }
-    }
+    // Defined below, so this only records the element here.
   }, [])
 
-  const seek = useCallback((seconds: number) => {
+  const seek = useCallback((seconds: number, mode?: "original" | "edited") => {
     const current = projectRef.current
     const video = videoRef.current
     if (!current || !video) return
+    // An explicit mode wins, so switching Before/After does not run the seek with
+    // the mode that was active a moment ago.
+    const which = mode ?? previewMode
+    // Reattach the playback anchor to wherever we are jumping to.
+    segmentRef.current = null
     const clips = current.clips ?? []
-    if (previewMode === "original") {
+    if (which === "original") {
       // "Before" is the unedited source, which is every clip end to end, so a
       // global source time still has to resolve to the clip holding it.
       const sourceMs = Math.max(0, Math.min(current.sourceDurationMs, seconds * 1000))
@@ -1863,6 +1938,7 @@ export function EditorShell() {
     if (segment.clipId && segment.clipId !== activeClipId) {
       pendingSeekRef.current = segment.clipStartMs + Math.max(0, target - segment.outputStartMs)
       pendingPlayRef.current = playing
+      segmentRef.current = segment.id
       setActiveClipId(segment.clipId)
       setCurrentTime(target / 1000)
       return
@@ -1871,6 +1947,7 @@ export function EditorShell() {
       ? segment.clipStartMs + Math.max(0, target - segment.outputStartMs)
       : segment.sourceStartMs + Math.max(0, target - segment.outputStartMs)
     video.currentTime = localMs / 1000
+    segmentRef.current = segment.id
     setCurrentTime(target / 1000)
   }, [previewMode, activeClipId, playing])
 
@@ -1898,11 +1975,14 @@ export function EditorShell() {
     if (!clip) return
     // Park the playhead at the head of the chosen clip.
     if (previewMode === "original") {
-      seek(clip.offsetMs / 1000)
+      seek(clip.offsetMs / 1000, "original")
       return
     }
+    // In edited mode the playhead is an output time, so a clip's source offset
+    // is the wrong thing to seek to. A clip that has been cut away entirely has
+    // no output position at all, so fall back to the start of the timeline.
     const segment = current.segments.find((item) => item.clipId === clipId)
-    seek((segment ? segment.outputStartMs : clip.offsetMs) / 1000)
+    seek((segment ? segment.outputStartMs : 0) / 1000, "edited")
   }, [previewMode, seek])
 
   const handleVideoTimeUpdate = useCallback((video: HTMLVideoElement) => {
@@ -1931,40 +2011,64 @@ export function EditorShell() {
       setPlaying(!video.paused)
       return
     }
-    // Work in this clip's own time, then step to the next kept segment.
-    let segment = current.segments.find(
-      (item) => (item.clipId === activeClipId || !item.clipId) &&
-        localMs >= item.clipStartMs && localMs <= item.clipEndMs,
-    )
-    if (!segment && !video.paused) {
-      const next = current.segments.find(
-        (item) => (item.clipId === activeClipId || !item.clipId) && item.clipStartMs > localMs,
+    // Output order is the source of truth. Anchoring on the clip's own time and
+    // looking for "the next segment after this one in the file" broke as soon as
+    // a section was reordered, and it handed over to the last segment rather
+    // than the next one when there was a cut between them.
+    const segments = current.segments;
+    if (segments.length === 0) {
+      video.pause()
+      setPlaying(false)
+      return
+    }
+    let index = segmentRef.current ? segments.findIndex((item) => item.id === segmentRef.current) : -1
+    if (index < 0) {
+      // No anchor, so reattach from where the element actually is.
+      index = segments.findIndex(
+        (item) => (!item.clipId || item.clipId === activeClipId) &&
+          localMs >= item.clipStartMs && localMs <= item.clipEndMs,
       )
-      if (next) {
-        video.currentTime = next.clipStartMs / 1000
-        segment = next
-      } else if (current.segments.length > 0) {
-        // Past the last segment of this clip: hand over to the clip that follows.
-        const last = current.segments[current.segments.length - 1]
-        if (activeClipId && last.clipId && last.clipId !== activeClipId) {
-          pendingPlayRef.current = true
-          setActiveClipId(last.clipId)
-          return
-        }
+      if (index < 0) {
+        index = segments.findIndex(
+          (item) => (!item.clipId || item.clipId === activeClipId) && item.clipStartMs > localMs,
+        )
+      }
+      if (index < 0) {
         video.pause()
         setPlaying(false)
         return
       }
     }
-    if (!segment) return
+    // Step forward or backward through the sequence, never by source position.
+    while (index < segments.length - 1 && localMs > segments[index].clipEndMs + 60) index += 1
+    while (index > 0 && localMs < segments[index].clipStartMs - 60) index -= 1
+    const segment = segments[index]
+    segmentRef.current = segment.id
+
+    if (segment.clipId && segment.clipId !== activeClipId) {
+      // A different clip takes over: load it, land on the right frame, carry on.
+      pendingSeekRef.current = segment.clipStartMs
+      pendingPlayRef.current = !video.paused
+      setActiveClipId(segment.clipId)
+      setCurrentTime(segment.outputStartMs / 1000)
+      return
+    }
+    if (localMs < segment.clipStartMs - 40 || localMs > segment.clipEndMs + 40) {
+      video.currentTime = segment.clipStartMs / 1000
+    }
     const outputMs = segment.outputStartMs + Math.max(0, localMs - segment.clipStartMs)
     setCurrentTime(outputMs / 1000)
     setPlaying(!video.paused)
 
     const music = musicRef.current
     if (music && current.music) {
+      // Duck while a word is actually being spoken. The old test asked whether
+      // the segment contained any word at all, which is almost always true, so
+      // the music stayed ducked for whole segments and the preview audibly
+      // disagreed with the sidechaincompress in the export.
+      const sourceMs = segment.sourceStartMs + Math.max(0, localMs - segment.clipStartMs)
       const speechActive = current.transcript?.words.some(
-        (word) => word.startMs >= segment.sourceStartMs && word.startMs <= segment.sourceEndMs,
+        (word) => sourceMs >= word.startMs && sourceMs <= word.endMs,
       ) ?? false
       music.volume = Math.max(
         0,
@@ -2207,7 +2311,7 @@ export function EditorShell() {
 
   const beginExport = useCallback(async () => {
     const current = projectRef.current
-    if (!current?.media) {
+    if (!current || current.clips.length === 0) {
       setExportError("Upload a video before exporting.")
       setExportState("error")
       return
@@ -2215,23 +2319,73 @@ export function EditorShell() {
     setExportError(null)
     setDownloadUrl(null)
     setExportState("processing")
+    // The render is one long request, so it needs its own deadline. Without one
+    // a dropped connection left the dialog spinning indefinitely.
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => controller.abort(), 10 * 60 * 1000)
     try {
-      const response = await api.tool(current.id, "export_video", {}, crypto.randomUUID())
+      const response = await api.tool(current.id, "export_video", {}, crypto.randomUUID(), controller.signal)
       remember(response.project)
       setDownloadUrl("/api/projects/" + current.id + "/export")
       setExportState("complete")
     } catch (error) {
-      setExportError(error instanceof Error ? error.message : "Export failed.")
+      const message = error instanceof Error && error.name === "AbortError"
+        ? "The export took too long and was stopped. Try again with fewer clips."
+        : error instanceof Error
+          ? error.message
+          : "Export failed."
+      setExportError(message)
       setExportState("error")
+    } finally {
+      window.clearTimeout(timer)
     }
   }, [remember])
 
+  // Stable identities: these are dependencies of the effects inside
+  // VideoPreview, and inline arrows made them re-run on every render.
+  const togglePlay = useCallback(() => {
+    const video = videoRef.current
+    if (!video) return
+    // Called straight from the click, so the browser sees a user gesture.
+    // Playing from an effect instead is what Chrome blocks for unmuted video.
+    if (video.paused) {
+      setPlaying(true)
+      void video.play().catch(() => {
+        setPlaying(false)
+        setStatus("Playback was blocked. Press play again.", false)
+      })
+    } else {
+      video.pause()
+      setPlaying(false)
+    }
+  }, [setStatus])
+
+  const reportPlaybackBlocked = useCallback(() => {
+    setPlaying(false)
+    setStatus("Playback was blocked. Press play again.", false)
+  }, [setStatus])
+
+  const applyPendingSeek = useCallback(() => {
+    const video = videoRef.current
+    const target = pendingSeekRef.current
+    if (!video || target === null) return
+    pendingSeekRef.current = null
+    video.currentTime = target / 1000
+    if (pendingPlayRef.current) {
+      pendingPlayRef.current = false
+      void video.play().catch(reportPlaybackBlocked)
+    }
+  }, [reportPlaybackBlocked])
+
   const captionsOn = project?.edit.captions.enabled ?? false
   const captionPositionY = project?.edit.captions.positionY ?? 0.86
-  // "bold" is not offered as its own button: the server always turns
-  // word-highlight on for it, so a separate Bold button could never light up.
+  // Highlight wins when word highlighting is on, otherwise the weight decides.
   const captionStyle: CaptionStyle =
-    project?.edit.captions.wordHighlight ? "highlight" : "clean"
+    project?.edit.captions.wordHighlight
+      ? "highlight"
+      : project?.edit.captions.preset === "bold"
+        ? "bold"
+        : "clean"
   const wordHighlight = project?.edit.captions.wordHighlight ?? false
   /** Hex value, for painting the spoken word in the preview. */
   const highlightHex = project?.edit.captions.highlightColor ?? "#FFD84D"
@@ -2269,8 +2423,10 @@ export function EditorShell() {
         onEnabled={(value) => void runTool("set_caption_style", { enabled: value })}
         onStyle={(value) =>
           void runTool("set_caption_style", {
-            preset: value === "highlight" ? "bold" : "clean",
+            // Clean and Bold are looks; Highlight is the karaoke look.
+            preset: value === "clean" ? "clean" : "bold",
             word_highlight: value === "highlight",
+            font_scale: value === "highlight" ? 1.15 : undefined,
           })
         }
         onSize={(value) => void runTool("set_caption_style", { font_scale: value / 32 })}
@@ -2356,12 +2512,26 @@ export function EditorShell() {
 
   return (
     <main className="app-shell">
+      {/* Surface a broken environment up front. Without ffmpeg an export fails
+          and without an API key transcription fails, and both used to surface
+          only as a failed request several steps into a demo. */}
+      {health && (!health.ffmpeg || !health.assemblyai) && (
+        <div className="env-notice" role="status">
+          {[
+            !health.assemblyai ? "Transcription and voice are unavailable: the server has no ASSEMBLYAI_API_KEY." : null,
+            !health.ffmpeg ? "Export is unavailable: ffmpeg was not found on the server." : null,
+          ].filter(Boolean).join(" ")}
+        </div>
+      )}
       <EditorHeader
         title={title}
         saveStatus={saveStatus}
+        statusTone={statusTone}
         onTitle={setTitle}
         onExport={() => {
-          setExportState("options")
+          // Reopening after a finished render should offer the download again,
+          // not throw the creator back to the start of the flow.
+          if (exportState !== "complete" || !downloadUrl) setExportState("options")
           setExportOpen(true)
         }}
         onUndo={() => void runTool("undo_edit", {})}
@@ -2390,41 +2560,17 @@ export function EditorShell() {
             activeClipId={activeClip?.id ?? null}
             onVideoReady={handleVideoReady}
             onVideoTimeUpdate={handleVideoTimeUpdate}
-            onPlay={() => {
-              if (!activeClip) return
-              const video = videoRef.current
-              if (!video) return
-              // Called straight from the click, so the browser sees a user
-              // gesture. Playing from an effect instead is what Chrome blocks
-              // for unmuted video, and the rejection was being swallowed.
-              if (video.paused) {
-                setPlaying(true)
-                void video.play().catch(() => {
-                  setPlaying(false)
-                  setStatus("Playback was blocked. Press play again.", false)
-                })
-              } else {
-                video.pause()
-                setPlaying(false)
-              }
-            }}
+            onPlay={togglePlay}
             onSeek={seek}
-            onPlaybackBlocked={() => {
-              setPlaying(false)
-              setStatus("Playback was blocked. Press play again.", false)
-            }}
-            onAttachReady={() => {
-              const video = videoRef.current
-              if (!video || !pendingSeekRef.current) return
-              const target = pendingSeekRef.current
-              pendingSeekRef.current = null
-              video.currentTime = target / 1000
-            }}
+            onPlaybackBlocked={reportPlaybackBlocked}
+            onAttachReady={applyPendingSeek}
             onRatio={(value) => void runTool("set_aspect_ratio", { mode: modeFromRatio(value) })}
             onMode={(value) => {
               setPreviewMode(value)
               setPlaying(false)
-              window.setTimeout(() => seek(0), 0)
+              // Pass the mode explicitly: seek still closes over the previous
+              // one at this point, so Before was seeking with edited maths.
+              window.setTimeout(() => seek(0, value), 0)
             }}
           />
           <div className="mobile-tabs mobile-only" role="tablist">

@@ -6,7 +6,7 @@ export type Tool =
   | "history"
   | "framing"
 
-export type CaptionStyle = "clean" | "highlight"
+export type CaptionStyle = "clean" | "bold" | "highlight"
 
 export type VoiceState =
   | "Disconnected"

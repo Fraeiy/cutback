@@ -860,14 +860,18 @@ function setCaptions(project: Project, args: Record<string, unknown>, callId: st
   if (color && /^#[0-9a-fA-F]{6}$/.test(color)) captions.color = color;
   const highlight = asString(args.highlight_color);
   if (highlight && /^#[0-9a-fA-F]{6}$/.test(highlight)) captions.highlightColor = highlight;
-  if (typeof args.word_highlight === "boolean") captions.wordHighlight = args.word_highlight;
   const preset = asString(args.preset);
   if (preset === "clean" || preset === "bold" || preset === "minimal") {
     captions.preset = preset;
-    if (preset === "bold") Object.assign(captions, { fontScale: 1.3, wordHighlight: true, background: "rgba(0, 0, 0, 0.82)" });
-    if (preset === "minimal") Object.assign(captions, { fontScale: 0.9, wordHighlight: false, background: "rgba(0, 0, 0, 0.35)" });
+    // A preset sets the look only. Whether the spoken word is highlighted is a
+    // separate choice, so "bold" no longer forces it on and collapses into
+    // "highlight" as a separate option.
+    if (preset === "bold") Object.assign(captions, { fontScale: 1.3, background: "rgba(0, 0, 0, 0.82)" });
+    if (preset === "minimal") Object.assign(captions, { fontScale: 0.9, background: "rgba(0, 0, 0, 0.35)" });
     if (preset === "clean") Object.assign(captions, { fontScale: 1, background: "rgba(12, 12, 12, 0.72)" });
   }
+  // Applied after the preset so an explicit request always wins.
+  if (typeof args.word_highlight === "boolean") captions.wordHighlight = args.word_highlight;
   const font = asString(args.font_family);
   if (font === "Arial" || font === "Liberation Sans" || font === "DejaVu Sans") captions.fontFamily = font;
   commit(project);
@@ -1543,10 +1547,4 @@ function finishBatch(
     },
     completed.length === 0 && failed.status !== "needs_clarification",
   );
-}
-
-export function spansSignature(spans: Project["edit"]["spans"]): string {
-  return normalizeSpans(spans, Number.MAX_SAFE_INTEGER)
-    .map((span) => `${Math.round(span.sourceStartMs)}-${Math.round(span.sourceEndMs)}`)
-    .join("|");
 }

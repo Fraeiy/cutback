@@ -367,18 +367,6 @@ export function mapSourceRange(
   return null;
 }
 
-export function sourceTimeForOutput(outputMs: number, segments: ResolvedSegment[]): number {
-  if (segments.length === 0) return 0;
-  const time = clamp(outputMs, 0, outputDuration(segments));
-  for (const segment of segments) {
-    if (time <= segment.outputEndMs) {
-      return segment.sourceStartMs + (time - segment.outputStartMs);
-    }
-  }
-  const last = segments[segments.length - 1];
-  return last.sourceEndMs;
-}
-
 export function overlapMs(a0: number, a1: number, b0: number, b1: number): number {
   return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
 }

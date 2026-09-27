@@ -6,4 +6,3 @@ export * from "./present.js";
 export * from "./tools.js";
 export * from "./exportPlan.js";
 export * from "./voice.js";
-export { spansSignature } from "./tools.js";
