@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { PresentedProject, Proposal, ResolvedSegment } from "@cutback/timeline"
 import { api, type Health } from "./api"
 import { VoiceSession, type VoicePhase } from "./voice"
+import { FloatingAssistant } from "./editor/FloatingAssistant"
 import {
   PROJECT_MEDIA as mediaImage,
   TOOL_LABELS as toolLabels,
@@ -408,7 +409,8 @@ export function VideoPreview({
   const activeCue = project?.cues.find(
     (cue) => currentTime * 1000 >= cue.outputStartMs && currentTime * 1000 <= cue.outputEndMs,
   )
-  const framing = project?.edit.framing
+  const framing = mode === "original" ? undefined : project?.edit.framing
+  const canvasRatio = !framing || framing.mode === "original" ? (project?.media ? project.media.width / project.media.height : 16 / 9) : framing.mode === "wide" ? 16 / 9 : framing.mode === "square" ? 1 : 9 / 16
   return (
     <section className="preview-panel">
       <div className="preview-toolbar desktop-only">
@@ -440,7 +442,9 @@ export function VideoPreview({
           </select>
         </div>
       </div>
+      <div className="preview-canvas-area">
       <div
+        style={{ "--canvas-ratio": canvasRatio } as React.CSSProperties}
         ref={stageRef}
         className={`video-stage ratio-${ratio.replace(":", "-").toLowerCase()}`}
       >
@@ -476,6 +480,7 @@ export function VideoPreview({
             {activeCue.text}
           </div>
         )}
+      </div>
       </div>
       <PlaybackControls
         currentTime={currentTime}
@@ -564,7 +569,7 @@ function MobileTimeline({
             style={{ objectPosition: `${18 + frame * 16}% 44%` }}
           />
         ))}
-        <i style={{ left: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }} />
+        <i style={{ left: `calc(112px + (100% - 112px) * ${duration > 0 ? Math.min(1, currentTime / duration) : 0})` }} />
         <button
           aria-label="Seek compact timeline"
           onClick={(event) => {
@@ -1185,20 +1190,6 @@ export function Timeline({
           <Icon name="document" size={17} />
           Timeline
         </b>
-        <button
-          className="desktop-only"
-          disabled
-          title="Timeline snapping is not needed for transcript-based cuts."
-        >
-          Snapping <i className="tiny-toggle" />
-        </button>
-        <button
-          className="desktop-only"
-          disabled
-          title="Use the transcript selection to make a precise cut."
-        >
-          <Icon name="scissors" size={16} /> Split
-        </button>
         <label>
           <span className="desktop-only">Zoom</span>
           <input
@@ -1237,7 +1228,7 @@ export function Timeline({
           />
           <div
             className="playhead"
-            style={{ left: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
+            style={{ left: `calc(112px + (100% - 112px) * ${duration > 0 ? Math.min(1, currentTime / duration) : 0})` }}
           >
             <span>{formatTime(currentTime)}</span>
           </div>
@@ -1287,76 +1278,6 @@ export function Timeline({
           </div>
         </div>
       </div>
-    </section>
-  )
-}
-
-export function VoiceDock({
-  state,
-  level,
-  detail,
-  lines,
-  onToggle,
-  onStop,
-}: {
-  state: VoiceState
-  level: number
-  detail: string | null
-  lines: Array<{ who: "user" | "agent"; text: string }>
-  onToggle: () => void
-  onStop: () => void
-}) {
-  const [expanded, setExpanded] = useState(false)
-  const isError = state === "Permission error" || state === "Connection error"
-  const active = state !== "Disconnected" && !isError
-  const voiceOpen = expanded || state === "Listening" || state === "Connecting"
-  const instruction = isError
-    ? detail || (state === "Permission error" ? "Microphone access was declined." : "Voice service could not connect.")
-    : lines.at(-1)?.text || (active ? "Speak naturally to edit this project." : "Tap to start voice editing")
-  return (
-    <section
-      className={`voice-dock ${active ? "active" : ""} ${state === "Listening" ? "listening" : ""} ${voiceOpen ? "voice-open" : ""} ${isError ? "voice-error" : ""}`}
-    >
-      {expanded && (
-        <div className="voice-history">
-          <b>Recent conversation</b>
-          {lines.slice(-6).map((line, index) => (
-            <p key={`${line.who}-${index}`}><span>{line.who === "user" ? "You" : "Cutback"}</span> {line.text}</p>
-          ))}
-        </div>
-      )}
-      <button
-        className="mic-button"
-        onClick={onToggle}
-        aria-label={active ? "Disconnect voice" : "Connect voice"}
-      >
-        <Icon name="mic" size={28} />
-      </button>
-      <div className="voice-wave">
-        {[.32, .54, .78, 1, .64, .88, .45, .7, .36].map((weight, index) => (
-          <i key={index} style={{ height: `${Math.max(4, Math.min(34, level * 360 * weight))}px` }} />
-        ))}
-      </div>
-      <button
-        className="voice-copy"
-        onClick={() => setExpanded((value) => !value)}
-        aria-expanded={expanded}
-      >
-        <b>
-          {isError
-            ? state
-            : state === "Disconnected"
-            ? "Tell Cutback what to change"
-            : `${state}…`}{" "}
-          <span>Voice</span>
-        </b>
-        <p>{instruction}</p>
-      </button>
-      {active && (
-        <button className="stop-button" onClick={onStop}>
-          <i /> <span className="desktop-only">Stop</span>
-        </button>
-      )}
     </section>
   )
 }
@@ -2180,7 +2101,7 @@ export function EditorShell() {
             ))}
           </div>
           <div className="mobile-tool-panel mobile-only">{inspector}</div>
-          <VoiceDock
+          <FloatingAssistant
             state={voice}
             level={voiceLevel}
             detail={voiceDetail}
