@@ -51,15 +51,32 @@ button:disabled { opacity: .35; cursor: default; }
 .segmented.mini button { padding: 5px 22px; font-size: 11px; }
 select { color: var(--text); background: var(--panel-3); border: 1px solid var(--border); border-radius: 7px; padding: 7px 10px; }
 .toolbar-right select { margin-left: 8px; padding: 5px 10px; font-size: 11px; }
-.video-stage { flex: 1; min-height: 190px; position: relative; overflow: hidden; border: 1px solid var(--border); background: #090a0b; display: grid; place-items: center; }
-.video-stage img, .video-stage video { width: 100%; height: 100%; padding: 14px; object-fit: contain; object-position: center; }
+/* The stage only centres; the frame carries the clip's aspect ratio so overlays
+   land on the picture instead of the letterbox. */
+.video-stage { flex: 1; min-height: 190px; position: relative; overflow: hidden; border: 1px solid var(--border); background: #090a0b; display: grid; place-items: center; perspective: 1400px; }
+/* Tilted in 3D with the pointer, with a fixed specular sheen and a cast shadow
+   so the frame reads as a physical surface rather than a flat rectangle. */
+.video-frame { --tilt-x: 0deg; --tilt-y: 0deg; --gloss-x: 50%; --gloss-y: 50%; position: relative; aspect-ratio: var(--canvas-ratio, 16 / 9); max-width: 100%; max-height: 100%; width: 100%; background: #000; transform: rotateX(var(--tilt-x)) rotateY(var(--tilt-y)) translateZ(0); transform-style: preserve-3d; transition: transform .18s ease-out, box-shadow .18s ease-out; box-shadow: 0 18px 44px -14px #000c, 0 3px 10px #0008, 0 0 0 1px #ffffff14; }
+.video-stage:hover .video-frame { box-shadow: 0 30px 60px -16px #000e, 0 6px 16px #0009, 0 0 0 1px #ffffff26; }
+.video-frame::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(120% 90% at var(--gloss-x) var(--gloss-y), #ffffff1f, #ffffff00 55%); opacity: 0; transition: opacity .2s; }
+.video-stage:hover .video-frame::after { opacity: 1; }
+.video-frame video, .video-frame img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.video-frame.ratio-1-1 { width: min(100%, 62vh); }
+.video-frame.ratio-9-16 { width: min(100%, 40vh); }
 .ratio-1-1 img { width: min(58%, 56vh); }
 .ratio-9-16 img { width: min(34%, 36vh); }
-.safe-guides { position: absolute; inset: 10%; border: 1px dashed rgba(255,255,255,.48); border-radius: 3px; pointer-events: none; }
+.safe-guides { position: absolute; inset: 8%; border: 1px dashed rgba(255,255,255,.48); border-radius: 3px; pointer-events: none; }
+/* No tilt on touch, where there is no hover, or when motion is not wanted. */
+@media (hover: none), (pointer: coarse), (prefers-reduced-motion: reduce) {
+  .video-frame { transform: none !important; transition: none; }
+  .video-frame::after { display: none; }
+}
+
 .caption { position: absolute; left: 50%; translate: -50%; width: 88%; text-align: center; font-size: clamp(18px, var(--caption-size), 34px); font-weight: 700; text-shadow: 0 2px 8px #000; pointer-events: none; }
-.position-bottom { bottom: 8%; }
-.position-middle { top: 50%; translate: -50% -50%; }
-.position-top { top: 8%; }
+/* Driven by the persisted positionY so the preview matches the burned export. */
+.position-bottom { top: calc(var(--caption-y, .86) * 100%); translate: -50% -100%; margin-top: -4%; }
+.position-middle { top: calc(var(--caption-y, .5) * 100%); translate: -50% -50%; }
+.position-top { top: calc(var(--caption-y, .16) * 100%); translate: -50% 0; }
 .caption-highlight { color: #fff; }
 .caption-highlight::first-line { background: var(--mint); color: #102016; box-shadow: 8px 0 var(--mint), -8px 0 var(--mint); }
 .caption-bold { font-weight: 800; -webkit-text-stroke: .5px #000; }
@@ -73,7 +90,7 @@ input[type="range"] { --progress: 45%; appearance: none; height: 3px; border-rad
 input[type="range"]::-webkit-slider-thumb { appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.25); }
 
 .desktop-inspector { min-height: 0; overflow: hidden; background: var(--panel); }
-.inspector { height: 100%; min-height: 0; display: flex; flex-direction: column; padding: 0 14px 14px; }
+.inspector { width: 100%; height: 100%; min-height: 0; display: flex; flex-direction: column; padding: 0 14px 14px; }
 .inspector-header { flex: none; min-height: 72px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); }
 .inspector-header > div { display: flex; flex-direction: column; gap: 6px; }
 .inspector-header > div:last-child { flex-direction: row; }
@@ -123,8 +140,11 @@ h2 { font-size: 16px; margin: 0; letter-spacing: -.2px; }
 
 .mobile-mini-timeline { display: none !important; }
 
-.settings-panel { overflow-y: auto; }
-.settings-panel fieldset { border: 0; padding: 0; margin: 18px 0 0; }
+/* Settings panels scroll vertically only. Without the explicit x rule the
+   browser computes overflow-x to auto and a stray scrollbar appears. */
+.settings-panel { overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
+.settings-panel > * { min-width: 0; max-width: 100%; }
+.settings-panel fieldset { border: 0; padding: 0; margin: 18px 0 0; min-width: 0; }
 .settings-panel legend { font-size: 12px; font-weight: 600; margin-bottom: 10px; }
 .preset-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .preset { height: 84px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-size: 10px; cursor: pointer; }
@@ -160,13 +180,24 @@ h2 { font-size: 16px; margin: 0; letter-spacing: -.2px; }
 .empty-card p, .helper { color: var(--muted); font-size: 11px; line-height: 1.5; margin: 7px 0 14px; }
 .secondary { min-height: 36px; border: 1px solid var(--border); background: var(--panel-3); color: var(--text); border-radius: 7px; padding: 0 15px; cursor: pointer; }
 .full { width: 100%; display: flex; justify-content: center; align-items: center; gap: 8px; }
-.media-bin { display: flex; flex-direction: column; gap: 7px; margin: 18px 0 12px; overflow-y: auto; }
-.media-file, .music-card { display: flex; gap: 10px; align-items: center; padding: 10px; border: 1px solid var(--border); border-radius: 8px; margin: 18px 0 12px; }
+.media-bin { display: flex; flex-direction: column; gap: 7px; margin: 18px 0 12px; min-width: 0; }
+.media-file, .music-card { display: flex; gap: 10px; align-items: center; padding: 10px; border: 1px solid var(--border); border-radius: 8px; min-width: 0; }
 .media-bin .media-file { margin: 0; background: var(--bg-elevated); }
 .media-bin .media-file.active { border-left: 2px solid var(--accent); }
-.media-file img, .media-file video { width: 88px; height: 52px; object-fit: cover; border-radius: 5px; background: var(--bg-base); }
-.media-file div, .music-card div { display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
+.media-file img, .media-file video { width: 88px; height: 52px; flex: none; object-fit: cover; border-radius: 5px; background: var(--bg-base); }
+.media-file div, .music-card div { display: flex; flex-direction: column; gap: 5px; font-size: 12px; min-width: 0; flex: 1; }
+/* Long filenames must ellipsize rather than widen the panel. */
+.media-file b, .music-card b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .media-file span, .music-card span { font-size: 10px; color: var(--muted); }
+/* Selecting a clip is a button wrapped around the thumbnail. */
+.media-pick { position: relative; flex: none; padding: 0; border: 0; background: none; cursor: pointer; border-radius: 5px; line-height: 0; }
+.media-pick img { display: block; }
+.media-index { position: absolute; left: 3px; top: 3px; min-width: 15px; height: 15px; padding: 0 3px; display: grid; place-items: center; background: #000a; color: #fff; border-radius: 4px; font-size: 9px; line-height: 1; }
+.media-file.active .media-index { background: var(--accent); color: #06231a; }
+.media-remove { flex: none; width: 24px; height: 24px; display: grid; place-items: center; border: 0; background: none; color: var(--muted); border-radius: 5px; cursor: pointer; }
+.media-remove:hover:not(:disabled) { background: #3a2226; color: #ffb4ab; }
+.media-remove:disabled { opacity: .3; cursor: not-allowed; }
+.clip-state.ok { color: #7fe0ac; }
 .music-card .icon-btn { margin-left: auto; }
 .ratio-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
 .ratio-grid button { height: 88px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 9px; font-size: 10px; cursor: pointer; }
@@ -441,7 +472,11 @@ button:focus-visible, [tabindex]:focus-visible, input:focus-visible, select:focu
 .floating-assistant { position: fixed; z-index: 35; color: var(--text); }
 .assistant-launcher { width: 56px; height: 56px; border: 1px solid #7af4d6; border-radius: 50%; background: var(--mint); color: #09271f; display: grid; place-items: center; cursor: grab; touch-action: none; box-shadow: 0 5px 22px #0006; position: relative; user-select: none; }
 .assistant-launcher:active, .assistant-header:active { cursor: grabbing; }
-.assistant-launcher-label { position: absolute; right: 64px; padding: 7px 10px; background: #20262d; color: var(--text); border: 1px solid var(--border); border-radius: 6px; white-space: nowrap; font-size: 11px; pointer-events: none; }
+/* Only reveal the label on hover or focus so it does not sit on the picture. */
+.assistant-launcher-label { position: absolute; right: 64px; padding: 7px 10px; background: #20262d; color: var(--text); border: 1px solid var(--border); border-radius: 6px; white-space: nowrap; font-size: 11px; pointer-events: none; opacity: 0; transition: opacity .16s; }
+.assistant-launcher:hover .assistant-launcher-label,
+.assistant-launcher:focus-visible .assistant-launcher-label,
+.assistant-launcher:focus-within .assistant-launcher-label { opacity: 1; }
 .assistant-status-dot { display: none; position: absolute; top: 1px; right: 1px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--bg); background: #ff8b5e; }
 .is-active .assistant-status-dot, .has-error .assistant-status-dot { display: block; }
 .has-error .assistant-status-dot { background: var(--danger); }

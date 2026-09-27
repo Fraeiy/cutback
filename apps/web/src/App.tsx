@@ -364,6 +364,7 @@ export function VideoPreview({
   captionStyle,
   captionSize,
   captionPosition,
+  captionPositionY,
   showGuides,
   mode,
   onPlay,
@@ -382,6 +383,8 @@ export function VideoPreview({
   captionStyle: CaptionStyle
   captionSize: number
   captionPosition: string
+  /** Normalised 0-1 vertical anchor, matching what the export burns in. */
+  captionPositionY: number
   showGuides: boolean
   mode: "original" | "edited"
   onPlay: () => void
@@ -396,6 +399,37 @@ export function VideoPreview({
   const stageRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const [muted, setMuted] = useState(false)
+  // Pointer-driven tilt. Kept in state-free refs and written straight to the
+  // element so pointer movement never triggers a React render.
+  const tiltRef = useRef<{ x: number; y: number; active: boolean }>({ x: 0, y: 0, active: false })
+
+  useEffect(() => {
+    const frame = stageRef.current
+    if (!frame) return
+    const MAX = 4.5
+    const onMove = (event: PointerEvent) => {
+      const rect = frame.getBoundingClientRect()
+      if (rect.width === 0 || rect.height === 0) return
+      const px = (event.clientX - rect.left) / rect.width - 0.5
+      const py = (event.clientY - rect.top) / rect.height - 0.5
+      tiltRef.current = { x: px * 2, y: py * 2, active: true }
+      frame.style.setProperty("--tilt-x", `${(-py * MAX).toFixed(2)}deg`)
+      frame.style.setProperty("--tilt-y", `${(px * MAX).toFixed(2)}deg`)
+      frame.style.setProperty("--gloss-x", `${((px + 0.5) * 100).toFixed(1)}%`)
+      frame.style.setProperty("--gloss-y", `${((py + 0.5) * 100).toFixed(1)}%`)
+    }
+    const onLeave = () => {
+      tiltRef.current.active = false
+      frame.style.setProperty("--tilt-x", "0deg")
+      frame.style.setProperty("--tilt-y", "0deg")
+    }
+    frame.addEventListener("pointermove", onMove)
+    frame.addEventListener("pointerleave", onLeave)
+    return () => {
+      frame.removeEventListener("pointermove", onMove)
+      frame.removeEventListener("pointerleave", onLeave)
+    }
+  }, [])
 
   useEffect(() => {
     const video = videoRef.current
@@ -450,43 +484,48 @@ export function VideoPreview({
         </div>
       </div>
       <div className="preview-canvas-area">
-      <div
-        style={{ "--canvas-ratio": canvasRatio } as React.CSSProperties}
-        ref={stageRef}
-        className={`video-stage ratio-${ratio.replace(":", "-").toLowerCase()}`}
-      >
-        {mediaSrc ? (
-          <video
-            ref={videoRef}
-            src={mediaSrc}
-            muted={muted}
-            playsInline
-            onTimeUpdate={(event) => onVideoTimeUpdate(event.currentTarget)}
-            onPlay={() => undefined}
-            onPause={() => undefined}
-            style={{
-              objectFit: framing?.mode && framing.mode !== "original" ? "cover" : "contain",
-              objectPosition: `${(framing?.focus ?? 0.5) * 100}% ${(framing?.focusY ?? 0.5) * 100}%`,
-            }}
-            aria-label="Uploaded video preview"
-          />
-        ) : (
-          <img
-            src={mediaImage}
-            alt="Creator recording a video in a home studio"
-          />
-        )}
-        {showGuides && <div className="safe-guides" />}
-        {mode === "edited" && project?.edit.captions.enabled && activeCue && (
-          <div
-            className={`caption caption-${captionStyle} position-${captionPosition.toLowerCase()}`}
-            style={
-              { "--caption-size": `${captionSize}px` } as React.CSSProperties
-            }
-          >
-            {activeCue.text}
-          </div>
-        )}
+      <div className="video-stage">
+        {/* The frame is sized to the clip's own aspect ratio so the video fills
+            it exactly. Overlays are positioned inside the frame, which keeps
+            captions and guides on the picture rather than in the letterbox. */}
+        <div
+          style={{ "--canvas-ratio": canvasRatio, "--caption-y": captionPositionY } as React.CSSProperties}
+          ref={stageRef}
+          className={`video-frame ratio-${ratio.replace(":", "-").toLowerCase()}`}
+        >
+          {mediaSrc ? (
+            <video
+              ref={videoRef}
+              src={mediaSrc}
+              muted={muted}
+              playsInline
+              onTimeUpdate={(event) => onVideoTimeUpdate(event.currentTarget)}
+              onPlay={() => undefined}
+              onPause={() => undefined}
+              style={{
+                objectFit: framing?.mode && framing.mode !== "original" ? "cover" : "contain",
+                objectPosition: `${(framing?.focus ?? 0.5) * 100}% ${(framing?.focusY ?? 0.5) * 100}%`,
+              }}
+              aria-label="Uploaded video preview"
+            />
+          ) : (
+            <img
+              src={mediaImage}
+              alt="Creator recording a video in a home studio"
+            />
+          )}
+          {showGuides && <div className="safe-guides" />}
+          {mode === "edited" && project?.edit.captions.enabled && activeCue && (
+            <div
+              className={`caption caption-${captionStyle} position-${captionPosition.toLowerCase()}`}
+              style={
+                { "--caption-size": `${captionSize}px` } as React.CSSProperties
+              }
+            >
+              {activeCue.text}
+            </div>
+          )}
+        </div>
       </div>
       </div>
       <PlaybackControls
@@ -2101,6 +2140,7 @@ export function EditorShell() {
   }, [remember])
 
   const captionsOn = project?.edit.captions.enabled ?? false
+  const captionPositionY = project?.edit.captions.positionY ?? 0.86
   const captionStyle: CaptionStyle =
     project?.edit.captions.preset === "bold"
       ? project.edit.captions.wordHighlight ? "highlight" : "bold"
@@ -2251,6 +2291,7 @@ export function EditorShell() {
             captionStyle={captionStyle}
             captionSize={captionSize}
             captionPosition={captionPosition}
+            captionPositionY={captionPositionY}
             showGuides={guides}
             mode={previewMode}
             mediaSrc={mediaSrc}
