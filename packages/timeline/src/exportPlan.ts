@@ -1,9 +1,20 @@
 import type { AudioSettings, CaptionCue, CaptionStyle, CropRect, ResolvedSegment } from "./types.js";
 
+export interface ExportClip {
+  clipId: string;
+  /** Absolute path to this clip's source file. */
+  path: string;
+  hasAudio: boolean;
+  width: number;
+  height: number;
+}
+
 export interface ExportPlanInput {
-  input: string;
+  /** One entry per clip on the timeline, in clip order. */
+  clips: ExportClip[];
   output: string;
   segments: ResolvedSegment[];
+  /** Every clip carries audio. False only when no clip does. */
   hasAudio: boolean;
   crop: CropRect | null;
   captions: CaptionStyle;
@@ -12,6 +23,9 @@ export interface ExportPlanInput {
   fontName: string | null;
   musicPath?: string | null;
   audio?: AudioSettings;
+  /** Normalise every clip to the first clip's geometry before concat. */
+  normalize?: boolean;
+  frameRate?: number;
 }
 
 function ms(value: number): string {
@@ -91,13 +105,44 @@ export function buildFilterGraph(input: ExportPlanInput): string {
   const chains: string[] = [];
   const videoLabels: string[] = [];
   const audioLabels: string[] = [];
+  // Segments read from whichever clip they were cut from. With a single clip this
+  // is always input 0, which keeps the one-clip graph byte-identical to before.
+  const indexByClipId = new Map(input.clips.map((clip, index) => [clip.clipId, index]));
+  const audioByClipId = new Map(input.clips.map((clip, index) => [clip.clipId, clip.hasAudio]));
+  // Concat requires matching geometry, so mixed-resolution sources are levelled
+  // to the first clip before joining.
+  const reference = input.clips[0];
+  const level = (index: number): string[] => {
+    if (!input.normalize || !reference) return [];
+    const clip = input.clips[index];
+    if (!clip) return [];
+    return [
+      `scale=${reference.width}:${reference.height}:force_original_aspect_ratio=decrease:flags=lanczos`,
+      `pad=${reference.width}:${reference.height}:(ow-iw)/2:(oh-ih)/2:color=black`,
+      "setsar=1",
+      `fps=${input.frameRate ?? 30}`,
+      "format=yuv420p",
+    ];
+  };
+
   input.segments.forEach((segment, index) => {
-    const start = ms(segment.sourceStartMs);
-    const end = ms(segment.sourceEndMs);
-    chains.push(`[0:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS[v${index}]`);
+    const clipIndex = indexByClipId.get(segment.clipId) ?? 0;
+    const start = ms(segment.clipStartMs);
+    const end = ms(segment.clipEndMs);
+    chains.push(
+      `[${clipIndex}:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS${level(clipIndex).length ? `,${level(clipIndex).join(",")}` : ""}[v${index}]`,
+    );
     videoLabels.push(`[v${index}]`);
+    // A clip with no audio is padded with silence so the concat keeps audio in
+    // step with video across the whole timeline.
     if (input.hasAudio) {
-      chains.push(`[0:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS,aresample=48000,volume=${input.audio?.speechVolume ?? 1}[a${index}]`);
+      if (audioByClipId.get(segment.clipId) === false) {
+        chains.push(
+          `anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${(segment.clipEndMs - segment.clipStartMs) / 1000},asetpts=PTS-STARTPTS[a${index}]`,
+        );
+      } else {
+        chains.push(`[${clipIndex}:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${input.audio?.speechVolume ?? 1}[a${index}]`);
+      }
       audioLabels.push(`[a${index}]`);
     }
   });
@@ -118,7 +163,7 @@ export function buildFilterGraph(input: ExportPlanInput): string {
       `scale=${crop.outWidth}:${crop.outHeight}:flags=lanczos`,
       "setsar=1",
     );
-  } else {
+  } else if (!input.normalize) {
     tails.push("setsar=1");
   }
   if (input.captions.enabled && input.srtPath && input.fontName) {
@@ -142,12 +187,16 @@ export function buildFilterGraph(input: ExportPlanInput): string {
       ? `subtitles='${escapeFilterPath(input.srtPath)}'${fonts}`
       : `subtitles='${escapeFilterPath(input.srtPath)}'${fonts}:force_style='${style.replace(/,/g, "\\,")}'`);
   }
-  chains.push(`${video}${tails.join(",")}[vout]`);
+  // With nothing to apply after the concat, a null filter still gives [vout] a
+  // label to bind to.
+  chains.push(tails.length > 0 ? `${video}${tails.join(",")}[vout]` : `${video}null[vout]`);
   if (input.hasAudio && input.musicPath) {
+    // Music is always the input after every clip.
+    const musicIndex = input.clips.length;
     const duration = ms(input.segments[input.segments.length - 1].outputEndMs);
     const musicVolume = input.audio?.musicVolume ?? 0.18;
     const fade = ((input.audio?.fadeMs ?? 180) / 1000).toFixed(3);
-    chains.push(`[1:a]atrim=duration=${duration},asetpts=PTS-STARTPTS,afade=t=in:st=0:d=${fade},afade=t=out:st=${Math.max(0, Number(duration) - Number(fade)).toFixed(3)}:d=${fade},volume=${musicVolume}[music]`);
+    chains.push(`[${musicIndex}:a]atrim=duration=${duration},asetpts=PTS-STARTPTS,afade=t=in:st=0:d=${fade},afade=t=out:st=${Math.max(0, Number(duration) - Number(fade)).toFixed(3)}:d=${fade},volume=${musicVolume}[music]`);
     if (input.audio?.duckMusic !== false) {
       chains.push("[music][ac]sidechaincompress=threshold=0.03:ratio=8:attack=40:release=220[ducked]");
       chains.push("[ac][ducked]amix=inputs=2:duration=first:normalize=0,aresample=48000[aout]");
@@ -160,11 +209,11 @@ export function buildFilterGraph(input: ExportPlanInput): string {
 
 export function buildExportArgs(input: ExportPlanInput): string[] {
   if (input.segments.length === 0) throw new Error("Cannot export an empty timeline.");
+  if (input.clips.length === 0) throw new Error("Upload a video first.");
   const filter = buildFilterGraph(input);
   const args = [
     "-y",
-    "-i",
-    input.input,
+    ...input.clips.flatMap((clip) => ["-i", clip.path]),
     ...(input.musicPath ? ["-stream_loop", "-1", "-i", input.musicPath] : []),
     "-filter_complex",
     filter,

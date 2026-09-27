@@ -1,5 +1,6 @@
 import type {
   CaptionCue,
+  Clip,
   CropRect,
   EditState,
   Framing,
@@ -11,6 +12,7 @@ import type {
   Word,
 } from "./types.js";
 import { MIN_SPAN_MS } from "./types.js";
+import { clipAt, splitRangeByClips } from "./clips.js";
 
 export function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
@@ -246,6 +248,7 @@ export function resolveSegments(
   edit: EditState,
   words: Word[],
   durationMs: number,
+  clips: Clip[] = [],
 ): ResolvedSegment[] {
   const spans = settleSpans(edit.spans, durationMs);
   const pieces: Piece[] = [];
@@ -281,6 +284,13 @@ export function resolveSegments(
       kept.push(piece);
       continue;
     }
+    // A clip that has not been transcribed yet has no words to anchor silence,
+    // so leave its audio alone rather than shortening it away.
+    const owning = clips.length > 0 ? clipAt(clips, piece.sourceStartMs) : null;
+    if (owning && !owning.transcript) {
+      kept.push(piece);
+      continue;
+    }
     const length = piece.sourceEndMs - piece.sourceStartMs;
     const active = edit.pause.thresholdMs > 0 && length >= edit.pause.thresholdMs;
     if (!active || silenceProtected(piece.sourceStartMs, piece.sourceEndMs, edit.pause)) {
@@ -306,14 +316,30 @@ export function resolveSegments(
     }
   }
 
+  // A cut may straddle a clip boundary once there is more than one clip. Split
+  // it so every segment maps to exactly one input file for export, then walk
+  // the pieces in order to lay out output time.
+  const piecesForExport = clips.length > 0
+    ? merged.flatMap((piece) =>
+        splitRangeByClips(clips, piece.sourceStartMs, piece.sourceEndMs).map((split) => ({
+          sourceStartMs: split.sourceStartMs,
+          sourceEndMs: split.sourceEndMs,
+          clip: split.clip,
+        })),
+      )
+    : merged.map((piece) => ({ ...piece, clip: null }));
+
   let output = 0;
-  return merged.map((piece) => {
+  return piecesForExport.map((piece, index) => {
     const segment: ResolvedSegment = {
-      id: `out_${Math.round(piece.sourceStartMs)}_${Math.round(piece.sourceEndMs)}`,
+      id: `out_${index}_${Math.round(piece.sourceStartMs)}_${Math.round(piece.sourceEndMs)}`,
       sourceStartMs: piece.sourceStartMs,
       sourceEndMs: piece.sourceEndMs,
       outputStartMs: output,
       outputEndMs: output + (piece.sourceEndMs - piece.sourceStartMs),
+      clipId: piece.clip?.id ?? "",
+      clipStartMs: piece.clip ? piece.sourceStartMs - piece.clip.offsetMs : piece.sourceStartMs,
+      clipEndMs: piece.clip ? piece.sourceEndMs - piece.clip.offsetMs : piece.sourceEndMs,
     };
     output = segment.outputEndMs;
     return segment;

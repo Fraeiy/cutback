@@ -12,12 +12,23 @@ import { ffmpegBin, findFont, parseProgress, runProcess } from "./ffmpeg.js";
 import { projectDir } from "./store.js";
 
 export async function renderExport(project: Project, onProgress: (progress: number) => Promise<void>): Promise<number> {
-  if (!project.media) throw new Error("Upload a video first.");
+  const clips = project.clips ?? [];
+  if (clips.length === 0) throw new Error("Upload a video first.");
   const view = present(project);
   if (view.segments.length === 0) throw new Error("The timeline is empty.");
   const dir = projectDir(project.id);
   await mkdir(dir, { recursive: true });
-  const input = await materializeProjectFile(project.id, project.media.storedName);
+  const exportClips = await Promise.all(
+    clips.map(async (clip) => ({
+      clipId: clip.id,
+      path: await materializeProjectFile(project.id, clip.media.storedName),
+      hasAudio: clip.media.hasAudio,
+      width: clip.media.width,
+      height: clip.media.height,
+    })),
+  );
+  // Only the clips actually used by the timeline need to be fed to ffmpeg, but
+  // segment clip ids index into this list so it must cover every clip present.
   const output = path.join(dir, "export.mp4");
   let subtitlePath: string | null = null;
   const font = findFont(project.edit.captions.fontFamily);
@@ -28,10 +39,10 @@ export async function renderExport(project: Project, onProgress: (progress: numb
     await writeFile(subtitlePath, buildAss(view.cues, project.edit.captions, font.family), "utf8");
   }
   const args = buildExportArgs({
-    input,
+    clips: exportClips,
     output,
     segments: view.segments,
-    hasAudio: project.media.hasAudio,
+    hasAudio: exportClips.some((clip) => clip.hasAudio),
     crop: view.crop,
     captions: project.edit.captions,
     srtPath: subtitlePath,
@@ -39,6 +50,8 @@ export async function renderExport(project: Project, onProgress: (progress: numb
     fontName: font?.family ?? null,
     musicPath: project.music ? await materializeProjectFile(project.id, project.music.storedName) : null,
     audio: project.edit.audio,
+    // Mixed sources must be levelled before concat; a lone clip needs no change.
+    normalize: exportClips.length > 1,
   });
   let buffer = "";
   let lastWrite = 0;

@@ -147,6 +147,14 @@ h2 { font-size: 16px; margin: 0; letter-spacing: -.2px; }
 .toggle-row i::after, .tiny-toggle::after { content: ""; position: absolute; width: 16px; height: 16px; background: #fff; border-radius: 50%; top: 3px; left: 3px; transition: .2s; }
 .toggle-row input:checked + i { background: #5ca77a; }
 .toggle-row input:checked + i::after { left: 19px; }
+/* Compact variant for use inside a panel header. */
+.toggle-row.compact { min-height: 0; margin: 0; font-size: 11px; color: var(--muted); gap: 8px; cursor: pointer; }
+.toggle-row.compact i { width: 34px; height: 20px; flex: none; }
+.toggle-row.compact i::after { width: 14px; height: 14px; top: 3px; left: 3px; }
+.toggle-row.compact input:checked + i::after { left: 17px; }
+.inspector-empty { margin: 18px 2px; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.caption-track.muted .caption-clips span { background: transparent; border-style: dashed; color: var(--muted); }
+.caption-clips .track-off { grid-column: 1 / -1; background: transparent; border-style: dashed; color: var(--muted); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
 .empty-card { margin-top: 20px; border: 1px dashed #3a4247; border-radius: var(--radius); min-height: 190px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 20px; }
 .empty-card b { margin-top: 12px; font-size: 13px; }
 .empty-card p, .helper { color: var(--muted); font-size: 11px; line-height: 1.5; margin: 7px 0 14px; }

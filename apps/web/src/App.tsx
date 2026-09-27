@@ -373,6 +373,7 @@ export function VideoPreview({
   onVideoReady,
   onVideoTimeUpdate,
   mediaSrc,
+  activeClipId,
 }: {
   project: PresentedProject | null
   currentTime: number
@@ -390,6 +391,7 @@ export function VideoPreview({
   onVideoReady: (video: HTMLVideoElement | null) => void
   onVideoTimeUpdate: (video: HTMLVideoElement) => void
   mediaSrc?: string | null
+  activeClipId: string | null
 }) {
   const stageRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -410,7 +412,12 @@ export function VideoPreview({
     (cue) => currentTime * 1000 >= cue.outputStartMs && currentTime * 1000 <= cue.outputEndMs,
   )
   const framing = mode === "original" ? undefined : project?.edit.framing
-  const canvasRatio = !framing || framing.mode === "original" ? (project?.media ? project.media.width / project.media.height : 16 / 9) : framing.mode === "wide" ? 16 / 9 : framing.mode === "square" ? 1 : 9 / 16
+  // The frame matches whichever clip is loaded, so clips of different shapes
+  // letterbox correctly instead of stretching.
+  const loadedClip = project?.clips?.find((clip) => clip.id === activeClipId) ?? project?.clips?.[0]
+  const canvasRatio = !framing || framing.mode === "original"
+    ? (loadedClip ? loadedClip.media.width / loadedClip.media.height : 16 / 9)
+    : framing.mode === "wide" ? 16 / 9 : framing.mode === "square" ? 1 : 9 / 16
   return (
     <section className="preview-panel">
       <div className="preview-toolbar desktop-only">
@@ -484,7 +491,7 @@ export function VideoPreview({
       </div>
       <PlaybackControls
         currentTime={currentTime}
-        duration={((mode === "original" ? project?.media?.durationMs : project?.outputDurationMs) ?? 0) / 1000}
+        duration={((mode === "original" ? project?.sourceDurationMs : project?.outputDurationMs) ?? 0) / 1000}
         playing={playing}
         muted={muted}
         onPlay={onPlay}
@@ -742,8 +749,10 @@ export function CaptionInspector({
   size,
   position,
   safe,
+  enabled,
   textColor,
   highlightColor,
+  onEnabled,
   onStyle,
   onSize,
   onPosition,
@@ -755,8 +764,10 @@ export function CaptionInspector({
   size: number
   position: string
   safe: boolean
+  enabled: boolean
   textColor: string
   highlightColor: string
+  onEnabled: (enabled: boolean) => void
   onStyle: (style: CaptionStyle) => void
   onSize: (size: number) => void
   onPosition: (position: string) => void
@@ -768,8 +779,19 @@ export function CaptionInspector({
     <section className="inspector settings-panel">
       <div className="inspector-header">
         <h2>Captions</h2>
-        <span>Preview</span>
+        <label className="toggle-row compact">
+          <span>Show captions</span>
+          <input
+            type="checkbox"
+            checked={enabled}
+            aria-label="Show captions"
+            onChange={(event) => onEnabled(event.target.checked)}
+          />
+          <i />
+        </label>
       </div>
+      {enabled ? (
+        <>
       <fieldset>
         <legend>Caption style</legend>
         <div className="preset-grid">
@@ -849,6 +871,10 @@ export function CaptionInspector({
         />
         <i />
       </label>
+        </>
+      ) : (
+        <p className="inspector-empty">Captions are hidden in the preview and the exported MP4.</p>
+      )}
     </section>
   )
 }
@@ -961,47 +987,64 @@ export function AudioInspector({
 function MediaPanel({
   project,
   phase,
-  thumbnail,
-  mediaItems,
+  activeClipId,
+  onSelectClip,
+  onRemoveClip,
   onUpload,
 }: {
   project: PresentedProject | null
   phase: ProjectPhase
-  thumbnail: string | null
-  mediaItems: Array<{ name: string; url: string }>
+  activeClipId: string | null
+  onSelectClip: (clipId: string) => void
+  onRemoveClip: (clipId: string) => void
   onUpload: (files: File[]) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const clips = project?.clips ?? []
+  const busy = phase === "uploading" || phase === "transcribing"
   return (
     <section className="inspector settings-panel">
       <div className="inspector-header">
         <h2>Media</h2>
+        {clips.length > 0 && <span>{clips.length} {clips.length === 1 ? "clip" : "clips"}</span>}
       </div>
-      {project?.media || mediaItems.length ? (
-        <div className="media-bin" aria-label="Project media">
-          {(mediaItems.length
-            ? mediaItems
-            : [{ name: project?.media?.filename || "Video", url: "" }]
-          ).map((item, index) => (
-            <div className={`media-file ${index === 0 ? "active" : ""}`} key={`${item.name}-${index}`}>
-              {item.url ? (
-                <video src={item.url} muted preload="metadata" aria-hidden="true" />
-              ) : (
-                <img src={thumbnail || mediaImage} alt="" />
-              )}
-              <div>
-                <b>{item.name}</b>
-                {index === 0 && project?.media ? (
-                  <>
-                    <span>{project.media.width} × {project.media.height}</span>
-                    <span>{formatTime(project.media.durationMs / 1000)}</span>
-                  </>
-                ) : (
-                  <span>Media bin</span>
-                )}
+      {clips.length > 0 ? (
+        <div className="media-bin" aria-label="Project clips">
+          {clips.map((clip, index) => {
+            const transcribed = Boolean(clip.transcript)
+            return (
+              <div
+                className={`media-file ${activeClipId === clip.id ? "active" : ""}`}
+                key={clip.id}
+              >
+                <button
+                  className="media-pick"
+                  aria-label={`Select clip ${index + 1}, ${clip.media.filename}`}
+                  aria-pressed={activeClipId === clip.id}
+                  onClick={() => onSelectClip(clip.id)}
+                >
+                  <img src={mediaImage} alt="" />
+                  <span className="media-index">{index + 1}</span>
+                </button>
+                <div>
+                  <b title={clip.media.filename}>{clip.media.filename}</b>
+                  <span>{clip.media.width} × {clip.media.height} · {formatTime(clip.media.durationMs / 1000)}</span>
+                  <span className={transcribed ? "clip-state ok" : "clip-state"}>
+                    {transcribed ? "Transcribed" : "Needs transcript"}
+                  </span>
+                </div>
+                <button
+                  className="media-remove"
+                  aria-label={`Remove clip ${index + 1}`}
+                  disabled={clips.length === 1}
+                  title={clips.length === 1 ? "A project needs at least one clip" : "Remove clip"}
+                  onClick={() => onRemoveClip(clip.id)}
+                >
+                  <Icon name="close" size={15} />
+                </button>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       ) : (
         <div className="empty-card">
@@ -1017,7 +1060,7 @@ function MediaPanel({
           </b>
           <p>
             {phase === "empty"
-              ? "Choose a video file to begin editing."
+              ? "Choose one or more videos to begin editing."
               : "Preparing transcript"}
           </p>
         </div>
@@ -1036,13 +1079,14 @@ function MediaPanel({
       />
       <button
         className="secondary full"
-        disabled={phase === "uploading" || phase === "transcribing"}
+        disabled={busy}
         onClick={() => inputRef.current?.click()}
       >
-        <Icon name="upload" size={17} /> Select local video
+        <Icon name="upload" size={17} />
+        {clips.length > 0 ? "Add more clips" : "Select local video"}
       </button>
       <p className="helper">
-        MP4, MOV, WEBM or MKV. Up to 2 minutes and 200 MB each.
+        MP4, MOV, WEBM or MKV. Select several at once to build a sequence. 2 minutes and 200 MB each.
       </p>
     </section>
   )
@@ -1170,6 +1214,7 @@ export function Timeline({
   waveform,
   currentTime,
   zoom,
+  captionsOn,
   onSeek,
   onZoom,
 }: {
@@ -1178,6 +1223,7 @@ export function Timeline({
   waveform: number[]
   currentTime: number
   zoom: number
+  captionsOn: boolean
   onSeek: (time: number) => void
   onZoom: (zoom: number) => void
 }) {
@@ -1254,15 +1300,17 @@ export function Timeline({
               ))}
             </div>
           </div>
-          <div className="track caption-track">
+          <div className={`track caption-track ${captionsOn ? "" : "muted"}`}>
             <label>
               <Icon name="captions" size={17} />
               Captions
             </label>
             <div className="caption-clips">
-              {(project?.cues ?? []).map((cue) => (
-                <span key={cue.id} title={cue.text}>{cue.text}</span>
-              ))}
+              {captionsOn
+                ? (project?.cues ?? []).map((cue) => (
+                    <span key={cue.id} title={cue.text}>{cue.text}</span>
+                  ))
+                : <span className="track-off">Captions off</span>}
             </div>
           </div>
           <div className="track audio-track">
@@ -1499,7 +1547,7 @@ export function EditorShell() {
   const [voiceLevel, setVoiceLevel] = useState(0)
   const [voiceLines, setVoiceLines] = useState<Array<{ who: "user" | "agent"; text: string }>>([])
   const [thumbnails, setThumbnails] = useState<string[]>([])
-  const [mediaItems, setMediaItems] = useState<Array<{ name: string; url: string }>>([])
+  const [activeClipId, setActiveClipId] = useState<string | null>(null)
   const [waveform, setWaveform] = useState<number[]>([])
 
   const projectRef = useRef<PresentedProject | null>(null)
@@ -1508,7 +1556,10 @@ export function EditorShell() {
   const voiceRef = useRef<VoiceSession | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const statusTimerRef = useRef<number | null>(null)
-  const mediaUrlsRef = useRef<string[]>([])
+  /** Clip-local time to apply once a newly loaded clip is ready. */
+  const pendingSeekRef = useRef<number | null>(null)
+  /** Whether playback should resume after a clip switch. */
+  const pendingPlayRef = useRef(false)
 
   const setStatus = useCallback((message: string, restore = true) => {
     if (statusTimerRef.current) window.clearTimeout(statusTimerRef.current)
@@ -1584,28 +1635,49 @@ export function EditorShell() {
       setStatus(project.jobs.transcription.error || "Transcription failed.", false)
   }, [project?.jobs.transcription.error, project?.jobs.transcription.status, setStatus])
 
-  const mediaSrc = project?.media ? "/api/projects/" + project.id + "/media?v=" + encodeURIComponent(project.updatedAt) : null
+  // The preview can only play one file at a time, so it follows whichever clip
+  // the playhead currently sits in. Thumbnails and waveform are gathered per
+  // clip and laid end to end to match the flattened timeline.
+  const clips = project?.clips ?? []
+  const activeClip = clips.find((clip) => clip.id === activeClipId) ?? clips[0] ?? null
+  const mediaSrc = activeClip
+    ? `/api/projects/${project!.id}/media?clip=${encodeURIComponent(activeClip.id)}&v=${encodeURIComponent(project!.updatedAt)}`
+    : null
   const musicSrc = project?.music ? "/api/projects/" + project.id + "/music?v=" + encodeURIComponent(project.updatedAt) : null
 
   useEffect(() => {
-    if (!project?.media || !mediaSrc) {
+    if (!project) {
       setThumbnails([])
       setWaveform([])
       return
     }
     let alive = true
-    void Promise.all([
-      createThumbnails(mediaSrc, project.media.durationMs / 1000).catch(() => []),
-      api.waveform(project.id).then((result) => result.peaks).catch(() => []),
-    ]).then(([frames, peaks]) => {
+    void Promise.all(
+      clips.map(async (clip) => {
+        const src = `/api/projects/${project.id}/media?clip=${encodeURIComponent(clip.id)}&v=${encodeURIComponent(project.updatedAt)}`
+        const [frames, wave] = await Promise.all([
+          createThumbnails(src, clip.media.durationMs / 1000).catch(() => []),
+          api.waveform(project.id, clip.id).then((result) => result.peaks).catch(() => []),
+        ])
+        return { clip, frames, wave }
+      }),
+    ).then((parts) => {
       if (!alive) return
-      setThumbnails(frames)
-      setWaveform(peaks)
+      setThumbnails(parts.flatMap((part) => part.frames))
+      // Each clip reports a fixed 120 peaks, so repeat it by its time share.
+      setWaveform(
+        parts.flatMap((part) => {
+          const share = part.clip.media.durationMs;
+          if (share <= 0) return [];
+          const repeats = Math.max(1, Math.round(120 * share / (project.sourceDurationMs || share)));
+          return Array.from({ length: repeats }, () => part.wave).flat();
+        }),
+      )
     })
     return () => {
       alive = false
     }
-  }, [mediaSrc, project?.id, project?.media?.durationMs])
+  }, [project?.id, project?.updatedAt, clips.length])
 
   useEffect(() => {
     const video = videoRef.current
@@ -1616,15 +1688,14 @@ export function EditorShell() {
     return () => {
       voiceRef.current?.end()
       if (statusTimerRef.current) window.clearTimeout(statusTimerRef.current)
-      mediaUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
     }
   }, [])
 
   const phase: ProjectPhase = uploading
     ? "uploading"
-    : !project?.media
+    : clips.length === 0
       ? "empty"
-      : project.jobs.transcription.status === "running"
+      : project?.jobs.transcription.status === "running"
         ? "transcribing"
         : "ready"
 
@@ -1650,16 +1721,39 @@ export function EditorShell() {
 
   const handleVideoReady = useCallback((video: HTMLVideoElement | null) => {
     videoRef.current = video
+    // A clip switch reloads the element, so replay the seek it interrupted.
+    const pending = pendingSeekRef.current
+    if (video && pending !== null) {
+      pendingSeekRef.current = null
+      video.currentTime = pending / 1000
+      if (pendingPlayRef.current) {
+        pendingPlayRef.current = false
+        void video.play().catch(() => undefined)
+      }
+    }
   }, [])
 
   const seek = useCallback((seconds: number) => {
     const current = projectRef.current
     const video = videoRef.current
     if (!current || !video) return
+    const clips = current.clips ?? []
     if (previewMode === "original") {
-      const target = Math.max(0, Math.min(current.media?.durationMs ?? 0, seconds * 1000))
-      video.currentTime = target / 1000
-      setCurrentTime(target / 1000)
+      // "Before" is the unedited source, which is every clip end to end, so a
+      // global source time still has to resolve to the clip holding it.
+      const sourceMs = Math.max(0, Math.min(current.sourceDurationMs, seconds * 1000))
+      const clip = clips.find((item) => sourceMs >= item.offsetMs && sourceMs < item.offsetMs + item.media.durationMs)
+        ?? clips[clips.length - 1]
+      if (!clip) return
+      const localMs = Math.max(0, Math.min(clip.media.durationMs, sourceMs - clip.offsetMs))
+      if (clip.id !== activeClipId) {
+        pendingSeekRef.current = localMs
+        setActiveClipId(clip.id)
+        setCurrentTime(sourceMs / 1000)
+        return
+      }
+      video.currentTime = localMs / 1000
+      setCurrentTime(sourceMs / 1000)
       return
     }
     const target = Math.max(0, Math.min(current.outputDurationMs, seconds * 1000))
@@ -1667,43 +1761,113 @@ export function EditorShell() {
       current.segments.find((item) => target >= item.outputStartMs && target <= item.outputEndMs) ??
       current.segments[current.segments.length - 1]
     if (!segment) return
-    const sourceMs = segment.sourceStartMs + Math.max(0, target - segment.outputStartMs)
-    video.currentTime = sourceMs / 1000
+    // The playhead may sit in a different clip than the one loaded. Switch first,
+    // then apply the position once that clip's metadata arrives.
+    if (segment.clipId && segment.clipId !== activeClipId) {
+      pendingSeekRef.current = segment.clipStartMs + Math.max(0, target - segment.outputStartMs)
+      pendingPlayRef.current = playing
+      setActiveClipId(segment.clipId)
+      setCurrentTime(target / 1000)
+      return
+    }
+    const localMs = segment.clipId
+      ? segment.clipStartMs + Math.max(0, target - segment.outputStartMs)
+      : segment.sourceStartMs + Math.max(0, target - segment.outputStartMs)
+    video.currentTime = localMs / 1000
     setCurrentTime(target / 1000)
+  }, [previewMode, activeClipId, playing])
+
+  /** Map the loaded clip's local time back onto the output timeline. */
+  const localToOutputMs = useCallback((localMs: number, clipId: string | null) => {
+    const current = projectRef.current
+    if (!current) return null
+    if (previewMode === "original") {
+      const clip = (current.clips ?? []).find((item) => item.id === clipId)
+      return clip ? clip.offsetMs + localMs : null
+    }
+    const segment = current.segments.find(
+      (item) => (!clipId || item.clipId === clipId || !item.clipId) &&
+        localMs >= item.clipStartMs && localMs <= item.clipEndMs,
+    )
+    if (!segment) return null
+    return segment.outputStartMs + Math.max(0, localMs - segment.clipStartMs)
   }, [previewMode])
+
+  const selectClip = useCallback((clipId: string) => {
+    const current = projectRef.current
+    if (!current) return
+    setActiveClipId(clipId)
+    const clip = (current.clips ?? []).find((item) => item.id === clipId)
+    if (!clip) return
+    // Park the playhead at the head of the chosen clip.
+    if (previewMode === "original") {
+      seek(clip.offsetMs / 1000)
+      return
+    }
+    const segment = current.segments.find((item) => item.clipId === clipId)
+    seek((segment ? segment.outputStartMs : clip.offsetMs) / 1000)
+  }, [previewMode, seek])
 
   const handleVideoTimeUpdate = useCallback((video: HTMLVideoElement) => {
     const current = projectRef.current
     if (!current) return
-    const sourceMs = video.currentTime * 1000
+    const localMs = video.currentTime * 1000
     if (previewMode === "original") {
-      setCurrentTime(video.currentTime)
+      const clips = current.clips ?? []
+      const clip = clips.find((item) => item.id === activeClipId) ?? clips[0]
+      if (!clip) return
+      // Roll into the next clip when this one runs out during playback.
+      if (!video.paused && localMs >= clip.media.durationMs - 40) {
+        const index = clips.indexOf(clip);
+        const next = clips[index + 1]
+        if (next) {
+          pendingSeekRef.current = 0
+          pendingPlayRef.current = true
+          setActiveClipId(next.id)
+          setCurrentTime(next.offsetMs / 1000)
+          return
+        }
+        video.pause()
+        setPlaying(false)
+      }
+      setCurrentTime((clip.offsetMs + localMs) / 1000)
       setPlaying(!video.paused)
       return
     }
+    // Work in this clip's own time, then step to the next kept segment.
     let segment = current.segments.find(
-      (item) => sourceMs >= item.sourceStartMs && sourceMs <= item.sourceEndMs,
+      (item) => (item.clipId === activeClipId || !item.clipId) &&
+        localMs >= item.clipStartMs && localMs <= item.clipEndMs,
     )
     if (!segment && !video.paused) {
-      const next = current.segments.find((item) => item.sourceStartMs > sourceMs)
+      const next = current.segments.find(
+        (item) => (item.clipId === activeClipId || !item.clipId) && item.clipStartMs > localMs,
+      )
       if (next) {
-        video.currentTime = next.sourceStartMs / 1000
+        video.currentTime = next.clipStartMs / 1000
         segment = next
-      } else {
+      } else if (current.segments.length > 0) {
+        // Past the last segment of this clip: hand over to the clip that follows.
+        const last = current.segments[current.segments.length - 1]
+        if (activeClipId && last.clipId && last.clipId !== activeClipId) {
+          pendingPlayRef.current = true
+          setActiveClipId(last.clipId)
+          return
+        }
         video.pause()
         setPlaying(false)
         return
       }
     }
     if (!segment) return
-    const outputMs = segment.outputStartMs + Math.max(0, sourceMs - segment.sourceStartMs)
+    const outputMs = segment.outputStartMs + Math.max(0, localMs - segment.clipStartMs)
     setCurrentTime(outputMs / 1000)
     setPlaying(!video.paused)
 
     const music = musicRef.current
     if (music && current.music) {
       const speechActive = current.transcript?.words.some(
-        (word) => sourceMs >= word.startMs && sourceMs <= word.endMs,
+        (word) => word.startMs >= segment.sourceStartMs && word.startMs <= segment.sourceEndMs,
       ) ?? false
       music.volume = Math.max(
         0,
@@ -1720,13 +1884,13 @@ export function EditorShell() {
     const current = projectRef.current
     if (!current) return
     await api.playback(current.id, {
-      sourceTimeMs: (videoRef.current?.currentTime ?? 0) * 1000,
+      sourceTimeMs: localToOutputMs((videoRef.current?.currentTime ?? 0) * 1000, activeClipId) ?? activeSourceMs,
       outputTimeMs: currentTime * 1000,
       selectedWordIds,
       capturedAt: new Date().toISOString(),
       reason: "selection",
     })
-  }, [currentTime, selectedWordIds])
+  }, [currentTime, selectedWordIds, activeClipId, localToOutputMs, activeSourceMs])
 
   const runTool = useCallback(async (name: string, args: Record<string, unknown>) => {
     const current = projectRef.current
@@ -1754,23 +1918,31 @@ export function EditorShell() {
     }
   }, [postContext, remember, seek, setStatus])
 
-  const upload = useCallback(async (file: File) => {
+  const upload = useCallback(async (files: File[]) => {
+    if (files.length === 0) return
     setUploading(true)
-    setStatus("Uploading…", false)
+    setStatus(files.length > 1 ? `Uploading ${files.length} clips…` : "Uploading…", false)
     voiceRef.current?.end()
     voiceRef.current = null
     setVoice("Disconnected")
     try {
-      const current = projectRef.current ?? await api.create(file.name.replace(/\.[^.]+$/, ""))
+      const first = files[0]
+      const current = projectRef.current ?? await api.create(first.name.replace(/\.[^.]+$/, ""))
       if (!projectRef.current) remember(current)
-      const uploaded = await api.upload(current.id, file)
-      remember(uploaded)
+      // Every selected file becomes a clip, appended in the order chosen.
+      let latest = current
+      for (const [index, file] of files.entries()) {
+        setStatus(files.length > 1 ? `Uploading clip ${index + 1} of ${files.length}…` : "Uploading…", false)
+        latest = await api.upload(latest.id, file)
+        remember(latest)
+      }
       setSelectedSentenceId(null)
       setCurrentTime(0)
       setPlaying(false)
       if (!health?.assemblyai) throw new Error("ASSEMBLYAI_API_KEY is missing on the server.")
-      setStatus("Transcribing…", false)
-      const transcribing = await api.transcribe(uploaded.id)
+      // Transcribes every clip that has no words yet.
+      setStatus(files.length > 1 ? "Transcribing clips…" : "Transcribing…", false)
+      const transcribing = await api.transcribe(latest.id)
       remember(transcribing)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Upload failed.", false)
@@ -1780,12 +1952,22 @@ export function EditorShell() {
   }, [health?.assemblyai, remember, setStatus])
 
   const uploadFiles = useCallback((files: File[]) => {
-    mediaUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
-    const items = files.map((file) => ({ name: file.name, url: URL.createObjectURL(file) }))
-    mediaUrlsRef.current = items.map((item) => item.url)
-    setMediaItems(items)
-    if (files[0]) void upload(files[0])
+    void upload(files)
   }, [upload])
+
+  const removeClip = useCallback(async (clipId: string) => {
+    const current = projectRef.current
+    if (!current) return
+    setStatus("Removing clip…", false)
+    try {
+      const next = await api.removeClip(current.id, clipId)
+      remember(next)
+      setActiveClipId((active) => (active === clipId ? next.clips[0]?.id ?? null : active))
+      setStatus("Clip removed.", false)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not remove that clip.", false)
+    }
+  }, [remember, setStatus])
 
   const selectSentence = useCallback((id: string) => {
     const current = projectRef.current
@@ -1918,6 +2100,7 @@ export function EditorShell() {
     }
   }, [remember])
 
+  const captionsOn = project?.edit.captions.enabled ?? false
   const captionStyle: CaptionStyle =
     project?.edit.captions.preset === "bold"
       ? project.edit.captions.wordHighlight ? "highlight" : "bold"
@@ -1934,7 +2117,7 @@ export function EditorShell() {
   const highlightColor =
     Object.entries(HIGHLIGHT_COLORS).find(([, value]) => value.toLowerCase() === (project?.edit.captions.highlightColor.toLowerCase() ?? ""))?.[0] ?? "mint"
   const ratio = ratioFromProject(project)
-  const duration = ((previewMode === "original" ? project?.media?.durationMs : project?.outputDurationMs) ?? 0) / 1000
+  const duration = ((previewMode === "original" ? project?.sourceDurationMs : project?.outputDurationMs) ?? 0) / 1000
 
   const changeTool = (tool: Tool) => {
     setActiveTool(tool)
@@ -1951,26 +2134,26 @@ export function EditorShell() {
         size={captionSize}
         position={captionPosition}
         safe={safe}
+        enabled={captionsOn}
         textColor={textColor}
         highlightColor={highlightColor}
+        onEnabled={(value) => void runTool("set_caption_style", { enabled: value })}
         onStyle={(value) =>
           void runTool("set_caption_style", {
-            enabled: true,
             preset: value === "highlight" ? "bold" : value,
             word_highlight: value === "highlight",
           })
         }
-        onSize={(value) => void runTool("set_caption_style", { enabled: true, font_scale: value / 32 })}
+        onSize={(value) => void runTool("set_caption_style", { font_scale: value / 32 })}
         onPosition={(value) =>
           void runTool("set_caption_style", {
-            enabled: true,
             position: value === "Middle" ? "center" : value.toLowerCase(),
           })
         }
         onSafe={setSafe}
-        onTextColor={(value) => void runTool("set_caption_style", { enabled: true, color: TEXT_COLORS[value] })}
+        onTextColor={(value) => void runTool("set_caption_style", { color: TEXT_COLORS[value] })}
         onHighlightColor={(value) =>
-          void runTool("set_caption_style", { enabled: true, word_highlight: true, highlight_color: HIGHLIGHT_COLORS[value] })
+          void runTool("set_caption_style", { word_highlight: true, highlight_color: HIGHLIGHT_COLORS[value] })
         }
       />
     )
@@ -1998,8 +2181,9 @@ export function EditorShell() {
       <MediaPanel
         project={project}
         phase={phase}
-        thumbnail={thumbnails[0] ?? null}
-        mediaItems={mediaItems}
+        activeClipId={activeClip?.id ?? null}
+        onSelectClip={selectClip}
+        onRemoveClip={(clipId) => void removeClip(clipId)}
         onUpload={uploadFiles}
       />
     )
@@ -2070,10 +2254,11 @@ export function EditorShell() {
             showGuides={guides}
             mode={previewMode}
             mediaSrc={mediaSrc}
+            activeClipId={activeClip?.id ?? null}
             onVideoReady={handleVideoReady}
             onVideoTimeUpdate={handleVideoTimeUpdate}
             onPlay={() => {
-              if (!project?.media) return
+              if (!activeClip) return
               setPlaying((value) => !value)
             }}
             onSeek={seek}
@@ -2119,6 +2304,7 @@ export function EditorShell() {
         waveform={waveform}
         currentTime={currentTime}
         zoom={zoom}
+        captionsOn={captionsOn}
         onSeek={seek}
         onZoom={setZoom}
       />

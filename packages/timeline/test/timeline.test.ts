@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   applyTool,
   attachMedia,
+  attachClip,
   buildExportArgs,
   buildSrt,
   coverCrop,
@@ -10,6 +11,7 @@ import {
   escapeFilterPath,
   mapSourceRange,
   present,
+  removeClip,
   resolveSegments,
   type Project,
   type Word,
@@ -21,16 +23,6 @@ function word(id: string, sentenceId: string, text: string, startMs: number, end
 
 function sample(): Project {
   const project = createProject("00000000-0000-4000-8000-000000000001", "Demo");
-  attachMedia(project, {
-    filename: "demo.mp4",
-    storedName: "original.mp4",
-    bytes: 1000,
-    durationMs: 11_000,
-    width: 1280,
-    height: 720,
-    hasAudio: true,
-    mime: "video/mp4",
-  });
   const sentences = [
     { id: "s01", text: "Ignore this intro.", startMs: 200, endMs: 1400, words: ["Ignore", "this", "intro."] },
     { id: "s02", text: "I tested this tool yesterday.", startMs: 2800, endMs: 4600, words: ["I", "tested", "this", "tool", "yesterday."] },
@@ -46,20 +38,34 @@ function sample(): Project {
       words.push(word(`${sentence.id}w${index}`, sentence.id, text, startMs, endMs));
     });
   }
-  project.transcript = {
-    id: "fixture",
-    model: null,
-    text: sentences.map((sentence) => sentence.text).join(" "),
-    words,
-    sentences: sentences.map((sentence) => ({
-      id: sentence.id,
-      text: sentence.text,
-      startMs: sentence.startMs,
-      endMs: sentence.endMs,
-      wordIds: words.filter((item) => item.sentenceId === sentence.id).map((item) => item.id),
-    })),
-  };
-  project.transcriptSource = "demo-fixture";
+  // The transcript hangs off the clip, which is the source of truth for media.
+  attachMedia(
+    project,
+    {
+      filename: "demo.mp4",
+      storedName: "original.mp4",
+      bytes: 1000,
+      durationMs: 11_000,
+      width: 1280,
+      height: 720,
+      hasAudio: true,
+      mime: "video/mp4",
+    },
+    {
+      id: "fixture",
+      model: null,
+      text: sentences.map((sentence) => sentence.text).join(" "),
+      words,
+      sentences: sentences.map((sentence) => ({
+        id: sentence.id,
+        text: sentence.text,
+        startMs: sentence.startMs,
+        endMs: sentence.endMs,
+        wordIds: words.filter((item) => item.sentenceId === sentence.id).map((item) => item.id),
+      })),
+    },
+    "demo-fixture",
+  );
   return project;
 }
 
@@ -301,7 +307,7 @@ test("export arguments are an array and share the resolved segments", () => {
   const view = present(project);
   const weird = "C:\\videos\\it's a file.mp4";
   const args = buildExportArgs({
-    input: weird,
+    clips: [{ clipId: "clip_1", path: weird, hasAudio: true, width: 1280, height: 720 }],
     output: "C:\\out\\export.mp4",
     segments: view.segments,
     hasAudio: true,
@@ -521,4 +527,107 @@ test("caption, framing and audio controls remain globally undoable", () => {
   assert.equal(project.edit.framing.mode, "square");
   applyTool(project, "redo_edit", {});
   assert.equal(project.edit.audio.speechVolume, 0.8);
+});
+
+/** A second, shorter clip with its own words, for multi-clip cases. */
+function addSecondClip(project: Project): void {
+  attachClip(
+    project,
+    {
+      filename: "b.mp4",
+      storedName: "clip-b.mp4",
+      bytes: 500,
+      durationMs: 4000,
+      width: 1280,
+      height: 720,
+      hasAudio: true,
+      mime: "video/mp4",
+    },
+    "clip_b",
+    {
+      id: "fixture-b",
+      model: null,
+      text: "Second clip opening. Second clip closing.",
+      words: [
+        word("s01w0", "s01", "Second", 300, 900),
+        word("s01w1", "s01", "clip", 900, 1500),
+        word("s01w2", "s01", "opening.", 1500, 2100),
+        word("s02w0", "s02", "Second", 2600, 3100),
+        word("s02w1", "s02", "clip", 3100, 3500),
+        word("s02w2", "s02", "closing.", 3500, 3900),
+      ],
+      sentences: [
+        { id: "s01", text: "Second clip opening.", startMs: 300, endMs: 2100, wordIds: ["s01w0", "s01w1", "s01w2"] },
+        { id: "s02", text: "Second clip closing.", startMs: 2600, endMs: 3900, wordIds: ["s02w0", "s02w1", "s02w2"] },
+      ],
+    },
+    "demo-fixture",
+  );
+}
+
+test("adding a clip keeps cuts already made and extends the timeline", () => {
+  const project = sample();
+  applyTool(project, "propose_cut", { action: "remove", sentence_id: "s01" });
+  const before = present(project);
+  assert.ok(before.removedWordIds.length > 0);
+
+  addSecondClip(project);
+
+  assert.equal(project.clips.length, 2);
+  assert.equal(project.clips[1].offsetMs, 11_000);
+  const after = present(project);
+  // The intro is still gone after the second clip is appended. Ids gain a clip
+  // prefix once there is more than one clip, so compare on the text instead.
+  const removedText = (view: typeof after) =>
+    view.removedWordIds.map((id) => project.transcript!.words.find((w) => w.id === id)?.text).sort();
+  assert.deepEqual(removedText(after), ["Ignore", "intro.", "this"]);
+  // The new clip's material is reachable rather than clipped away.
+  assert.equal(after.sourceDurationMs, 15_000);
+  assert.ok(after.outputDurationMs > before.outputDurationMs + 3_000);
+});
+
+test("segments are tagged with their clip and never cross a boundary", () => {
+  const project = sample();
+  addSecondClip(project);
+  const view = present(project);
+  assert.ok(view.segments.length > 0);
+  for (const segment of view.segments) {
+    const clip = project.clips.find((item) => item.id === segment.clipId);
+    assert.ok(clip, "every segment should name a real clip");
+    // Local time is the global range shifted by the clip's offset.
+    assert.equal(segment.clipStartMs, segment.sourceStartMs - clip!.offsetMs);
+    assert.equal(segment.clipEndMs, segment.sourceEndMs - clip!.offsetMs);
+    assert.ok(segment.clipStartMs >= 0);
+    assert.ok(segment.clipEndMs <= clip!.media.durationMs);
+  }
+  // Output time is contiguous across the whole flattened timeline.
+  for (let i = 1; i < view.segments.length; i += 1) {
+    assert.ok(view.segments[i].outputStartMs >= view.segments[i - 1].outputEndMs - 1);
+  }
+});
+
+test("word ids stay unique across two clips", () => {
+  const project = sample();
+  addSecondClip(project);
+  const ids = present(project).removedWordIds;
+  const words = project.transcript!.words;
+  assert.equal(new Set(words.map((item) => item.id)).size, words.length);
+  // Both clips' opening sentences survive, so both survived the flattening.
+  const sentences = project.transcript!.sentences.map((item) => item.id);
+  assert.equal(new Set(sentences).size, sentences.length);
+  assert.equal(sentences.length, 6);
+  assert.ok(ids !== undefined);
+});
+
+test("removing a clip closes the gap and leaves the rest intact", () => {
+  const project = sample();
+  addSecondClip(project);
+  const before = present(project).outputDurationMs;
+  removeClip(project, "clip_b");
+  assert.equal(project.clips.length, 1);
+  assert.equal(project.clips[0].offsetMs, 0);
+  assert.equal(present(project).sourceDurationMs, 11_000);
+  // Only the removed clip's material is gone.
+  assert.ok(present(project).outputDurationMs < before);
+  assert.equal(project.transcript!.sentences.length, 4);
 });

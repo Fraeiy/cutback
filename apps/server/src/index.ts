@@ -13,9 +13,12 @@ import {
   MAX_DURATION_MS,
   MAX_UPLOAD_BYTES,
   applyTool,
-  attachMedia,
+  attachClip,
   defaultEdit,
   present,
+  projectSourceDurationMs,
+  removeClip,
+  setClipTranscript,
   setPlayback,
   type PlaybackContext,
   type Project,
@@ -92,6 +95,29 @@ function sendProject(project: Project) {
   return present(project);
 }
 
+/**
+ * A clip change invalidates both the rendered file and the transcript job: the
+ * new clip has no words yet, and the export is stale either way.
+ */
+function resetJobs(project: Project): void {
+  project.jobs.transcription = {
+    status: "idle",
+    error: null,
+    progress: 0,
+    updatedAt: new Date().toISOString(),
+    transcriptId: null,
+  };
+  project.jobs.export = {
+    status: "idle",
+    error: null,
+    progress: 0,
+    updatedAt: null,
+    file: null,
+    bytes: null,
+    revision: null,
+  };
+}
+
 app.addHook("onRequest", async (request, reply) => {
   if (!request.url.startsWith("/api") || request.url.startsWith("/api/health")) return;
   const required = process.env.CUTBACK_ACCESS_TOKEN;
@@ -143,25 +169,31 @@ app.post("/api/projects/demo", async (_request, reply) => {
   const project = await createEmptyProject("Demo");
   const dir = projectDir(project.id);
   await mkdir(dir, { recursive: true });
-  const localSample = path.join(dir, "original.mp4");
+  const storedName = usesBlobStorage()
+    ? projectBlobPath(project.id, `source/demo-${crypto.randomUUID()}.mp4`)
+    : `clip-${crypto.randomUUID()}.mp4`;
+  const localSample = path.join(dir, path.basename(storedName));
   await copyFile(sample, localSample);
   const probed = await probeMedia(localSample);
   const bytes = (await stat(localSample)).size;
-  const storedName = usesBlobStorage() ? projectBlobPath(project.id, "source/original.mp4") : "original.mp4";
   if (usesBlobStorage()) await uploadPrivateFile(localSample, storedName, "video/mp4");
-  attachMedia(project, {
-    filename: "demo.mp4",
-    storedName,
-    bytes,
-    durationMs: probed.durationMs,
-    width: probed.width,
-    height: probed.height,
-    hasAudio: probed.hasAudio,
-    mime: "video/mp4",
-  });
   const transcript = JSON.parse(await readFile(transcriptFile, "utf8"));
-  project.transcript = transcript;
-  project.transcriptSource = "demo-fixture";
+  attachClip(
+    project,
+    {
+      filename: "demo.mp4",
+      storedName,
+      bytes,
+      durationMs: probed.durationMs,
+      width: probed.width,
+      height: probed.height,
+      hasAudio: probed.hasAudio,
+      mime: "video/mp4",
+    },
+    "clip_demo",
+    transcript,
+    "demo-fixture",
+  );
   project.title = "Demo";
   await saveProject(project);
   return sendProject(project);
@@ -240,10 +272,15 @@ app.post("/api/projects/:id/uploads/attach", async (request, reply) => {
     }
     const localFile = await materializeProjectFile(id, pathname);
     const probed = await probeMedia(localFile);
-    if (probed.durationMs > MAX_DURATION_MS + 250) {
-      return reply.code(400).send({ error: "Cutback's hackathon build accepts videos up to 2 minutes." });
+    const used = (project.clips ?? []).reduce((sum, clip) => sum + clip.media.durationMs, 0);
+    if (used + probed.durationMs > MAX_DURATION_MS + 250) {
+      return reply.code(400).send({
+        error: (project.clips ?? []).length === 0
+          ? "Cutback's hackathon build accepts videos up to 2 minutes."
+          : "Clips together can be at most 2 minutes long.",
+      });
     }
-    attachMedia(project, {
+    attachClip(project, {
       filename: path.basename(String(body.filename || "video")),
       storedName: pathname,
       bytes: Math.max(0, Number(body.bytes || 0)),
@@ -253,14 +290,7 @@ app.post("/api/projects/:id/uploads/attach", async (request, reply) => {
       hasAudio: probed.hasAudio,
       mime: String(body.contentType || "video/mp4"),
     });
-    project.transcript = null;
-    project.transcriptSource = null;
-    project.jobs.transcription = {
-      status: "idle", error: null, progress: 0, updatedAt: new Date().toISOString(), transcriptId: null,
-    };
-    project.jobs.export = {
-      status: "idle", error: null, progress: 0, updatedAt: null, file: null, bytes: null, revision: null,
-    };
+    resetJobs(project);
     await saveProject(project);
     return sendProject(project);
   });
@@ -277,7 +307,8 @@ app.post("/api/projects/:id/media", async (request, reply) => {
   }
   const dir = projectDir(id);
   await mkdir(dir, { recursive: true });
-  const storedName = `original${ext}`;
+  // Each clip gets its own file so adding a second clip cannot overwrite the first.
+  const storedName = `clip-${crypto.randomUUID()}${ext}`;
   const target = path.join(dir, storedName);
   await pipeline(incoming.file, createWriteStream(target));
   if (incoming.file.truncated) {
@@ -294,13 +325,19 @@ app.post("/api/projects/:id/media", async (request, reply) => {
       const message = error instanceof Error ? error.message : "Could not read that video.";
       return reply.code(400).send({ error: message });
     }
-    if (probed.durationMs > MAX_DURATION_MS + 250) {
+    const remaining = (MAX_DURATION_MS + 250) - (project.clips ?? []).reduce((sum, clip) => sum + clip.media.durationMs, 0);
+    if (probed.durationMs > remaining) {
       await rm(target, { force: true });
-      return reply.code(400).send({ error: "Cutback's hackathon build accepts videos up to 2 minutes." });
+      return reply.code(400).send({
+        error: (project.clips ?? []).length === 0
+          ? "Cutback's hackathon build accepts videos up to 2 minutes."
+          : "Clips together can be at most 2 minutes long.",
+      });
     }
     const bytes = (await stat(target)).size;
     for (const name of ["export.mp4", "captions.srt"]) await rm(path.join(dir, name), { force: true });
-    attachMedia(project, {
+    // Appending keeps any cuts already made on the earlier clips.
+    attachClip(project, {
       filename: path.basename(incoming.filename || storedName),
       storedName,
       bytes,
@@ -310,24 +347,22 @@ app.post("/api/projects/:id/media", async (request, reply) => {
       hasAudio: probed.hasAudio,
       mime: incoming.mimetype || "video/mp4",
     });
-    project.transcript = null;
-    project.transcriptSource = null;
-    project.jobs.transcription = {
-      status: "idle",
-      error: null,
-      progress: 0,
-      updatedAt: new Date().toISOString(),
-      transcriptId: null,
-    };
-    project.jobs.export = {
-      status: "idle",
-      error: null,
-      progress: 0,
-      updatedAt: null,
-      file: null,
-      bytes: null,
-      revision: null,
-    };
+    resetJobs(project);
+    await saveProject(project);
+    return sendProject(project);
+  });
+});
+
+app.delete("/api/projects/:id/clips/:clipId", async (request, reply) => {
+  const id = assertId((request.params as { id: string }).id);
+  const clipId = String((request.params as { clipId: string }).clipId);
+  return withProjectLock(id, async () => {
+    const project = await loadProject(id);
+    const clip = (project.clips ?? []).find((item) => item.id === clipId);
+    if (!clip) return reply.code(404).send({ error: "That clip is not on the timeline." });
+    removeClip(project, clipId);
+    resetJobs(project);
+    if (!usesBlobStorage()) await rm(path.join(projectDir(id), clip.media.storedName), { force: true });
     await saveProject(project);
     return sendProject(project);
   });
@@ -372,7 +407,7 @@ app.post("/api/projects/:id/playback", async (request, reply) => {
   }
   return withProjectLock(id, async () => {
     const project = await loadProject(id);
-    const duration = project.media?.durationMs ?? 0;
+    const duration = projectSourceDurationMs(project);
     setPlayback(project, {
       sourceTimeMs: Math.max(0, Math.min(duration, body.sourceTimeMs)),
       outputTimeMs: Math.max(0, body.outputTimeMs || 0),
@@ -393,10 +428,19 @@ app.post("/api/projects/:id/transcribe", async (request, reply) => {
       error: "Add ASSEMBLYAI_API_KEY to the server environment, then retry transcription.",
     });
   }
-  const started = await withProjectLock(id, async () => {
+  const body = (request.body ?? {}) as { clipId?: string };
+  const started: { ok: true; queue: string[] } | { error: string; code: number } = await withProjectLock(id, async () => {
     const project = await loadProject(id);
-    if (!project.media) return { error: "Upload a video first.", code: 400 };
+    const clips = project.clips ?? [];
+    if (clips.length === 0) return { error: "Upload a video first.", code: 400 };
     if (project.jobs.transcription.status === "running") return { error: "Transcription is already running.", code: 409 };
+    // A single clipId transcribes just that clip; otherwise every clip still
+    // missing words, so "add a clip then transcribe" just works.
+    const targets = body.clipId
+      ? clips.filter((clip) => clip.id === body.clipId)
+      : clips.filter((clip) => !clip.transcript);
+    const queue = targets.length > 0 ? targets : clips;
+    if (queue.length === 0) return { error: "Nothing to transcribe.", code: 400 };
     project.jobs.transcription = {
       status: "running",
       error: null,
@@ -405,58 +449,77 @@ app.post("/api/projects/:id/transcribe", async (request, reply) => {
       transcriptId: null,
     };
     await saveProject(project);
-    return { ok: true };
+    return { ok: true, queue: queue.map((clip) => clip.id) };
   });
-  if ("error" in started && started.error) return reply.code(started.code ?? 400).send({ error: started.error });
-  const work = runTranscription(id, key);
+  if ("error" in started) return reply.code(started.code).send({ error: started.error });
+  const work = runTranscription(id, key, started.queue);
   if (process.env.VERCEL) waitUntil(work);
   else void work;
   const project = await loadProject(id);
   return sendProject(project);
 });
 
-async function runTranscription(id: string, key: string): Promise<void> {
+async function runTranscription(id: string, key: string, clipIds: string[]): Promise<void> {
   try {
-    const project = await loadProject(id);
-    if (!project.media) throw new Error("Upload a video first.");
-    const filePath = await materializeProjectFile(id, project.media.storedName);
-    const uploadUrl = await uploadMedia(filePath, key);
-    const transcriptId = await submitTranscript(uploadUrl, key);
-    await withProjectLock(id, async () => {
-      const current = await loadProject(id);
-      current.jobs.transcription.transcriptId = transcriptId;
-      current.jobs.transcription.progress = 0.2;
-      current.jobs.transcription.updatedAt = new Date().toISOString();
-      await saveProject(current);
-    });
-    const completed = await pollTranscript(transcriptId, key, async (status) => {
+    for (let index = 0; index < clipIds.length; index += 1) {
+      const clipId = clipIds[index];
+      const share = 1 / clipIds.length;
+      const base = index * share;
+      const project = await loadProject(id);
+      const clip = (project.clips ?? []).find((item) => item.id === clipId);
+      if (!clip) continue;
+      const filePath = await materializeProjectFile(id, clip.media.storedName);
+      const uploadUrl = await uploadMedia(filePath, key);
+      const transcriptId = await submitTranscript(uploadUrl, key);
       await withProjectLock(id, async () => {
         const current = await loadProject(id);
-        if (current.jobs.transcription.status !== "running") return;
-        current.jobs.transcription.progress = status === "processing" ? 0.55 : 0.35;
+        current.jobs.transcription.transcriptId = transcriptId;
+        current.jobs.transcription.progress = base + share * 0.2;
         current.jobs.transcription.updatedAt = new Date().toISOString();
         await saveProject(current);
       });
-    });
-    const sentences = await fetchSentences(transcriptId, key);
-    const transcript = toTranscript(transcriptId, completed.model, completed.text, sentences, completed.words);
+      const completed = await pollTranscript(transcriptId, key, async (status) => {
+        await withProjectLock(id, async () => {
+          const current = await loadProject(id);
+          if (current.jobs.transcription.status !== "running") return;
+          current.jobs.transcription.progress = base + share * (status === "processing" ? 0.55 : 0.35);
+          current.jobs.transcription.updatedAt = new Date().toISOString();
+          await saveProject(current);
+        });
+      });
+      const sentences = await fetchSentences(transcriptId, key);
+      const transcript = toTranscript(transcriptId, completed.model, completed.text, sentences, completed.words);
+      await withProjectLock(id, async () => {
+        const current = await loadProject(id);
+        setClipTranscript(current, clipId, transcript, "assemblyai");
+        // New words change what the spans mean, so the edit starts clean.
+        current.edit = defaultEdit(projectSourceDurationMs(current));
+        current.undo = [];
+        current.redo = [];
+        current.proposals = [];
+        current.lastTarget = null;
+        current.highlight = null;
+        current.revision += 1;
+        current.jobs.export = {
+          status: "idle",
+          error: null,
+          progress: 0,
+          updatedAt: null,
+          file: null,
+          bytes: null,
+          revision: null,
+        };
+        await saveProject(current);
+      });
+    }
     await withProjectLock(id, async () => {
       const current = await loadProject(id);
-      current.transcript = transcript;
-      current.transcriptSource = "assemblyai";
-      current.edit = defaultEdit(current.media?.durationMs ?? 0);
-      current.undo = [];
-      current.redo = [];
-      current.proposals = [];
-      current.lastTarget = null;
-      current.highlight = null;
-      current.revision += 1;
       current.jobs.transcription = {
         status: "completed",
         error: null,
         progress: 1,
         updatedAt: new Date().toISOString(),
-        transcriptId,
+        transcriptId: current.jobs.transcription.transcriptId,
       };
       await saveProject(current);
     });
@@ -580,12 +643,21 @@ app.post("/api/projects/:id/tools/:name", async (request, reply) => {
   }
 });
 
+/** Resolve `?clip=` to a clip, defaulting to the first one. */
+function requestedClip(project: Project, query: unknown) {
+  const clips = project.clips ?? [];
+  if (clips.length === 0) return null;
+  const clipId = typeof query === "string" ? query : "";
+  return clips.find((clip) => clip.id === clipId) ?? clips[0];
+}
+
 app.get("/api/projects/:id/waveform", async (request, reply) => {
   const id = assertId((request.params as { id: string }).id);
   const project = await loadProject(id);
-  if (!project.media) return reply.code(404).send({ error: "Upload a video first." });
-  if (!project.media.hasAudio) return { peaks: [] };
-  const filePath = await materializeProjectFile(id, project.media.storedName);
+  const clip = requestedClip(project, (request.query as { clip?: string } | undefined)?.clip);
+  if (!clip) return reply.code(404).send({ error: "Upload a video first." });
+  if (!clip.media.hasAudio) return { peaks: [] };
+  const filePath = await materializeProjectFile(id, clip.media.storedName);
   const result = await runProcess(ffmpegBin(), [
     "-hide_banner",
     "-i", filePath,
@@ -598,6 +670,8 @@ app.get("/api/projects/:id/waveform", async (request, reply) => {
     .map((match) => Number(match[1]))
     .filter(Number.isFinite);
   if (!values.length) return { peaks: [] };
+  // Peaks are a fixed-width summary, so each clip returns the same count and the
+  // client can lay them end to end across the flattened timeline.
   const target = 120;
   const peaks = Array.from({ length: target }, (_, index) => {
     const start = Math.floor(index * values.length / target);
@@ -605,19 +679,20 @@ app.get("/api/projects/:id/waveform", async (request, reply) => {
     const loudness = Math.max(...values.slice(start, end));
     return Math.max(0.08, Math.min(1, (loudness + 60) / 54));
   });
-  return { peaks };
+  return { peaks, clipId: clip.id, durationMs: clip.media.durationMs };
 });
 
 app.get("/api/projects/:id/media", async (request, reply) => {
   const id = assertId((request.params as { id: string }).id);
   const project = await loadProject(id);
-  if (!project.media) return reply.code(404).send({ error: "No video yet." });
-  if (usesBlobStorage()) return reply.redirect(await signedReadUrl(project.media.storedName));
-  const filePath = path.join(projectDir(id), project.media.storedName);
+  const clip = requestedClip(project, (request.query as { clip?: string } | undefined)?.clip);
+  if (!clip) return reply.code(404).send({ error: "No video yet." });
+  if (usesBlobStorage()) return reply.redirect(await signedReadUrl(clip.media.storedName));
+  const filePath = path.join(projectDir(id), clip.media.storedName);
   const info = await stat(filePath);
   const range = request.headers.range;
   reply.header("Accept-Ranges", "bytes");
-  reply.header("Content-Type", project.media.mime || "video/mp4");
+  reply.header("Content-Type", clip.media.mime || "video/mp4");
   reply.header("Cache-Control", "private, max-age=3600");
   if (!range) {
     reply.header("Content-Length", info.size);

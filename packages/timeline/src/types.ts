@@ -38,6 +38,21 @@ export interface MediaInfo {
   mime: string;
 }
 
+/**
+ * One source video on the timeline. Clips are laid end to end on a single
+ * flattened source timeline: a clip's `offsetMs` is where it starts in that
+ * timeline, so a source time anywhere in the project maps to exactly one clip.
+ */
+export interface Clip {
+  id: string;
+  media: MediaInfo;
+  /** Start of this clip on the flattened source timeline. */
+  offsetMs: number;
+  transcript: Transcript | null;
+  /** demo-fixture timings are measured for sentences. Word times inside a sentence are evenly split until AssemblyAI runs. */
+  transcriptSource: "assemblyai" | "demo-fixture" | null;
+}
+
 export interface KeepSpan {
   id: string;
   sourceStartMs: number;
@@ -124,6 +139,11 @@ export interface ResolvedSegment {
   sourceEndMs: number;
   outputStartMs: number;
   outputEndMs: number;
+  /** Which clip this segment was cut from. Segments never span two clips. */
+  clipId: string;
+  /** The same range expressed in the clip's own local time. */
+  clipStartMs: number;
+  clipEndMs: number;
 }
 
 export interface CaptionCue {
@@ -222,12 +242,16 @@ export interface StoredCall {
 
 export interface Project {
   id: string;
-  version: 1;
+  version: 2;
   title: string;
   createdAt: string;
   updatedAt: string;
   revision: number;
+  /** Source clips in timeline order. This is the source of truth for media. */
+  clips: Clip[];
+  /** First clip's media, or null. Kept so single-clip call sites stay simple. */
   media: MediaInfo | null;
+  /** Every clip's transcript flattened onto the source timeline. Derived from `clips`. */
   transcript: Transcript | null;
   /** demo-fixture timings are measured for sentences. Word times inside a sentence are evenly split until AssemblyAI runs. */
   transcriptSource: "assemblyai" | "demo-fixture" | null;
@@ -251,6 +275,8 @@ export interface PresentedProject extends Project {
   cues: CaptionCue[];
   pauses: PauseMark[];
   outputDurationMs: number;
+  /** Length of the flattened source timeline, across every clip. */
+  sourceDurationMs: number;
   removedWordIds: string[];
   crop: CropRect | null;
   originalSegments: ResolvedSegment[];

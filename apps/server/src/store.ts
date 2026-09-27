@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createProject, defaultEdit, type Project } from "../../../packages/timeline/src/index.js";
+import { createProject, defaultEdit, projectSourceDurationMs, syncMirrors, type Clip, type MediaInfo, type Project, type Transcript } from "../../../packages/timeline/src/index.js";
 import { projectBlobPath, readPrivateText, usesBlobStorage, writePrivateText } from "./cloud.js";
 
 const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -33,6 +33,29 @@ export function withProjectLock<T>(id: string, task: () => Promise<T>): Promise<
   return run;
 }
 
+/**
+ * Version 1 stored a single `media` + `transcript`. Version 2 stores a `clips`
+ * array laid end to end on one flattened source timeline. Old projects migrate
+ * by lifting that single pair into a one-element clip list.
+ */
+function migrate(project: Project): Project {
+  if ((project.version as number) === 1) {
+    const legacy = project as unknown as { clips?: Clip[]; media: MediaInfo | null; transcript: Transcript | null; transcriptSource: Clip["transcriptSource"] };
+    project.clips = legacy.media
+      ? [{
+          id: "clip_1",
+          media: legacy.media,
+          offsetMs: 0,
+          transcript: legacy.transcript ?? null,
+          transcriptSource: legacy.transcriptSource ?? null,
+        }]
+      : [];
+    project.version = 2;
+  }
+  if (!Array.isArray(project.clips)) project.clips = [];
+  return syncMirrors(project);
+}
+
 export async function loadProject(id: string): Promise<Project> {
   const safeId = assertId(id);
   const raw = usesBlobStorage()
@@ -40,8 +63,11 @@ export async function loadProject(id: string): Promise<Project> {
     : await readFile(path.join(projectDir(safeId), "project.json"), "utf8");
   if (raw === null) throw new Error("Project not found.");
   const project = JSON.parse(raw) as Project;
-  if (project.version !== 1) throw new Error(`Unsupported project version ${String(project.version)}.`);
-  const defaults = defaultEdit(project.media?.durationMs ?? 0);
+  if ((project.version as number) !== 1 && (project.version as number) !== 2) {
+    throw new Error(`Unsupported project version ${String(project.version)}.`);
+  }
+  migrate(project);
+  const defaults = defaultEdit(projectSourceDurationMs(project));
   project.edit = {
     ...defaults,
     ...project.edit,

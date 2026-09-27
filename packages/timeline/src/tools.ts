@@ -1,10 +1,13 @@
 import { cutBounds, resolveTarget, toResolvedRange, type TargetInput } from "./target.js";
 import { defaultEdit, describePauses, insertRange, moveRange, newId, normalizeSpans, outputDuration, removeRange, resolveSegments } from "./resolve.js";
+import { makeClip, projectSourceDurationMs, syncMirrors, withOffsets } from "./clips.js";
 import { present } from "./present.js";
 import type {
   CaptionStyle,
+  Clip,
   Framing,
   HistoryEntry,
+  MediaInfo,
   PauseException,
   PausePolicy,
   Project,
@@ -13,6 +16,7 @@ import type {
   Sentence,
   Snapshot,
   ToolOutcome,
+  Transcript,
 } from "./types.js";
 
 const MAX_UNDO = 50;
@@ -27,7 +31,8 @@ function touch(project: Project): void {
 
 function ensureEdit(project: Project): void {
   if (!Array.isArray(project.edit.history)) project.edit.history = [];
-  const defaults = defaultEdit(project.media?.durationMs ?? 0);
+  if (!Array.isArray(project.clips)) project.clips = [];
+  const defaults = defaultEdit(projectSourceDurationMs(project));
   project.edit.captions = { ...defaults.captions, ...project.edit.captions };
   project.edit.framing = { ...defaults.framing, ...project.edit.framing };
   project.edit.audio = { ...defaults.audio, ...project.edit.audio };
@@ -78,7 +83,7 @@ function finish(
 }
 
 function requireReady(project: Project): string | null {
-  if (!project.media) return "Upload a video first.";
+  if (!project.clips || project.clips.length === 0) return "Upload a video first.";
   if (!project.transcript || project.transcript.sentences.length === 0) return "Transcribe the video before editing.";
   return null;
 }
@@ -97,7 +102,7 @@ function publicContext(project: Project): Record<string, unknown> {
     revision: project.revision,
     title: project.title,
     transcript_source: project.transcriptSource,
-    duration_ms: project.media?.durationMs ?? 0,
+    duration_ms: projectSourceDurationMs(project),
     output_duration_ms: view.outputDurationMs,
     framing: project.edit.framing,
     captions: project.edit.captions,
@@ -176,7 +181,7 @@ function applyCut(
   project: Project,
   cut: { startMs: number; endMs: number; label: string; sentenceId: string | null; action: ResolvedRange["action"] },
 ): { ok: true; summary: string } | { ok: false; message: string } {
-  const duration = project.media?.durationMs ?? 0;
+  const duration = projectSourceDurationMs(project);
   const originalSpans = project.edit.spans;
   const removed = removeRange(project.edit.spans, cut.startMs, cut.endMs, duration);
   if (removed.removedMs < 40) {
@@ -243,11 +248,12 @@ export function createProject(id: string, title = "Untitled"): Project {
   const now = new Date().toISOString();
   return {
     id,
-    version: 1,
+    version: 2,
     title,
     createdAt: now,
     updatedAt: now,
     revision: 1,
+    clips: [],
     media: null,
     transcript: null,
     transcriptSource: null,
@@ -267,18 +273,99 @@ export function createProject(id: string, title = "Untitled"): Project {
   };
 }
 
+/**
+ * Append a clip to the end of the timeline. Unlike the old `attachMedia` this
+ * does not discard the existing edit, so adding a second clip keeps the cuts
+ * already made on the first one.
+ */
+export function attachClip(
+  project: Project,
+  media: MediaInfo,
+  clipId?: string,
+  transcript?: Transcript | null,
+  transcriptSource?: Clip["transcriptSource"],
+): Project {
+  const existing = project.clips ?? [];
+  const clipId2 = clipId ?? newId("clip");
+  project.clips = withOffsets([...existing, makeClip(media, clipId2, transcript ?? null, transcriptSource ?? null)]);
+  // Read the offset back off the stored clip: the one just built starts at 0
+  // until withOffsets lays the list out.
+  const clip = project.clips[project.clips.length - 1];
+  const wasEmpty = existing.length === 0;
+  // A fresh project needs its default span to cover the new length. Once there
+  // are clips, keep the edit and just make sure the new material is reachable.
+  if (wasEmpty) {
+    project.edit = defaultEdit(projectSourceDurationMs(project));
+    project.undo = [];
+    project.redo = [];
+    project.proposals = [];
+    project.lastTarget = null;
+    project.highlight = null;
+  } else {
+    const total = projectSourceDurationMs(project);
+    const start = clip.offsetMs;
+    const untouched = project.edit.spans.every(
+      (span) => span.sourceEndMs <= start + 1 || span.sourceStartMs >= total - 1,
+    );
+    if (untouched) {
+      project.edit.spans = normalizeSpans(
+        [...project.edit.spans, { id: newId("span"), sourceStartMs: start, sourceEndMs: total }],
+        total,
+      );
+    }
+  }
+  syncMirrors(project);
+  project.revision += 1;
+  touch(project);
+  return project;
+}
+
+/** Drop a clip and close the gap it leaves in the source timeline. */
+export function removeClip(project: Project, clipId: string): Project {
+  const clips = project.clips ?? [];
+  const target = clips.find((clip) => clip.id === clipId);
+  if (!target) return project;
+  const start = target.offsetMs;
+  const end = target.offsetMs + target.media.durationMs;
+  const kept = clips.filter((clip) => clip.id !== clipId);
+  const shift = (value: number) => (value <= start ? value : Math.max(start, value - (end - start)));
+  project.clips = withOffsets(kept);
+  // Closes below the removed clip are untouched; anything after it slides left.
+  project.edit.spans = normalizeSpans(
+    project.edit.spans
+      .filter((span) => !(span.sourceStartMs >= start && span.sourceEndMs <= end))
+      .map((span) => ({ ...span, sourceStartMs: shift(span.sourceStartMs), sourceEndMs: shift(span.sourceEndMs) })),
+    projectSourceDurationMs(project),
+  );
+  syncMirrors(project);
+  project.revision += 1;
+  touch(project);
+  return project;
+}
+
+/** Legacy single-clip entry point. Replaces the whole clip list. */
 export function attachMedia(
   project: Project,
   media: NonNullable<Project["media"]>,
+  transcript?: Transcript | null,
+  transcriptSource?: Clip["transcriptSource"],
 ): Project {
-  project.media = media;
-  project.edit = defaultEdit(media.durationMs);
-  project.undo = [];
-  project.redo = [];
-  project.proposals = [];
-  project.lastTarget = null;
-  project.highlight = null;
-  project.revision += 1;
+  project.clips = [];
+  return attachClip(project, media, undefined, transcript, transcriptSource);
+}
+
+/** Store a finished transcript against one clip and rebuild the combined view. */
+export function setClipTranscript(
+  project: Project,
+  clipId: string,
+  transcript: Transcript | null,
+  source: Clip["transcriptSource"],
+): Project {
+  const clip = (project.clips ?? []).find((item) => item.id === clipId);
+  if (!clip) return project;
+  clip.transcript = transcript;
+  clip.transcriptSource = source;
+  syncMirrors(project);
   touch(project);
   return project;
 }
@@ -435,7 +522,7 @@ function proposeCut(project: Project, args: Record<string, unknown>, callId: str
     );
   }
 
-  const duration = project.media?.durationMs ?? 0;
+  const duration = projectSourceDurationMs(project);
   const bounds = cutBounds(action, found.range, duration);
   if (!bounds) {
     return finish(
@@ -770,7 +857,7 @@ function setCaptions(project: Project, args: Record<string, unknown>, callId: st
 }
 
 function setAspect(project: Project, args: Record<string, unknown>, callId: string | undefined): ToolOutcome {
-  if (!project.media) return finish(project, callId, { status: "error", error: "Upload a video first." }, true);
+  if (!project.clips || project.clips.length === 0) return finish(project, callId, { status: "error", error: "Upload a video first." }, true);
   const framing: Framing = { ...project.edit.framing };
   const mode = asString(args.mode);
   if (mode === "vertical" || mode === "9:16" || mode === "portrait") framing.mode = "vertical";
@@ -840,7 +927,7 @@ function previewSegment(project: Project, args: Record<string, unknown>, callId:
 }
 
 function requestExport(project: Project, callId: string | undefined): ToolOutcome {
-  if (!project.media) return finish(project, callId, { status: "error", error: "Upload a video first." }, true);
+  if (!project.clips || project.clips.length === 0) return finish(project, callId, { status: "error", error: "Upload a video first." }, true);
   const view = present(project);
   if (view.segments.length === 0) {
     return finish(project, callId, { status: "error", error: "The timeline is empty." }, true);
@@ -888,7 +975,7 @@ function ordinalArg(args: Record<string, unknown>, key: string): string | number
 }
 
 function pausesOf(project: Project) {
-  const duration = project.media?.durationMs ?? 0;
+  const duration = projectSourceDurationMs(project);
   return describePauses(project.transcript?.sentences ?? [], project.transcript?.words ?? [], project.edit, duration);
 }
 
@@ -1024,7 +1111,7 @@ function restoreSection(project: Project, args: Record<string, unknown>, callId:
   if (!removed && covered) {
     return finish(project, callId, { status: "error", error: `“${found.range.label}” is already in the edit.` }, true);
   }
-  const duration = project.media?.durationMs ?? 0;
+  const duration = projectSourceDurationMs(project);
   const matchingCut = [...project.edit.history].reverse().find(
     (entry) =>
       entry.kind === "cut" &&
@@ -1083,7 +1170,7 @@ function correctPrevious(project: Project, args: Record<string, unknown>, callId
   if (!replacement) {
     return finish(project, callId, { status: "error", error: offset < 0 ? "There is no previous section." : "There is no next section." }, true);
   }
-  const duration = project.media?.durationMs ?? 0;
+  const duration = projectSourceDurationMs(project);
   const restored = insertRange(project.edit.spans, last.startMs, last.endMs, duration, {
     beforeSpanId: last.restoreBeforeSpanId,
     afterSpanId: last.restoreAfterSpanId,
@@ -1154,7 +1241,7 @@ function reorderSections(project: Project, args: Record<string, unknown>, callId
     }
     anchorMs = place === "before" ? anchorRange.startMs : anchorRange.endMs;
   }
-  const duration = project.media?.durationMs ?? 0;
+  const duration = projectSourceDurationMs(project);
   const moved = moveRange(project.edit.spans, movingRange.startMs, movingRange.endMs, place, anchorMs, duration);
   if (moved.movedMs < 40) {
     return finish(project, callId, { status: "error", error: `“${movingRange.label}” is not in the edit, so it cannot move.` }, true);
@@ -1249,7 +1336,7 @@ function suggestShorterCut(project: Project, args: Record<string, unknown>, call
   const spans = sequence.map(sentenceSpan);
   const candidate = clone(project.edit);
   candidate.spans = spans;
-  const calculated = resolveSegments(candidate, project.transcript!.words, project.media!.durationMs);
+  const calculated = resolveSegments(candidate, project.transcript!.words, projectSourceDurationMs(project), project.clips);
   const durationMs = calculated.length ? calculated[calculated.length - 1].outputEndMs : 0;
   const impossible = [...required].some((id) => !chosen.has(id)) || durationMs > targetMs + 750;
   const explanation = impossible
@@ -1296,14 +1383,14 @@ function reviseShorterCut(project: Project, args: Record<string, unknown>, callI
   proposal.op.spans = existing.map((item) => ({ id: newId("span"), sourceStartMs: item.sourceStartMs, sourceEndMs: item.sourceEndMs }));
   const candidate = clone(project.edit);
   candidate.spans = proposal.op.spans;
-  proposal.durationMs = outputDuration(resolveSegments(candidate, project.transcript!.words, project.media!.durationMs));
+  proposal.durationMs = outputDuration(resolveSegments(candidate, project.transcript!.words, projectSourceDurationMs(project), project.clips));
   proposal.summary = `Revised proposal to keep “${keep.text}”; duration is ${(proposal.durationMs / 1000).toFixed(1)}s.`;
   proposal.explanation = "The requested sentence was added without changing the current edit.";
   return finish(project, callId, shorterProposalResult(proposal), false);
 }
 
 function setAudioMix(project: Project, args: Record<string, unknown>, callId: string | undefined): ToolOutcome {
-  if (!project.media) return finish(project, callId, { status: "error", error: "Upload a video first." }, true);
+  if (!project.clips || project.clips.length === 0) return finish(project, callId, { status: "error", error: "Upload a video first." }, true);
   const audio = { ...project.edit.audio };
   const speech = asNumber(args.speech_volume);
   const music = asNumber(args.music_volume);

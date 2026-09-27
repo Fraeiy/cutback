@@ -1,3 +1,4 @@
+import { projectSourceDurationMs } from "./clips.js";
 import type { PlaybackContext, Project, ResolvedRange, Sentence, Word } from "./types.js";
 
 export interface Candidate {
@@ -201,7 +202,7 @@ export function resolveTarget(project: Project, input: TargetInput): TargetResul
   if (!project.transcript || project.transcript.sentences.length === 0) {
     return { ok: false, message: "Transcribe the video before cutting.", candidates: [] };
   }
-  const duration = project.media?.durationMs ?? 0;
+  const duration = projectSourceDurationMs(project);
   const use = input.use ?? "auto";
   let result: TargetResult;
 

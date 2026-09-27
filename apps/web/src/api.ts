@@ -85,8 +85,10 @@ export const api = {
       headers: headers(true),
       body: JSON.stringify({ title }),
     }).then((response) => parse<PresentedProject>(response)),
-  waveform: (id: string) =>
-    fetch(`/api/projects/${id}/waveform`, { headers: headers() }).then((response) => parse<{ peaks: number[] }>(response)),
+  waveform: (id: string, clipId?: string) =>
+    fetch(`/api/projects/${id}/waveform${clipId ? `?clip=${encodeURIComponent(clipId)}` : ""}`, { headers: headers() }).then(
+      (response) => parse<{ peaks: number[]; clipId?: string; durationMs?: number }>(response),
+    ),
   upload: async (id: string, file: File) => {
     const cloud = await cloudUpload(id, file, "media");
     if (cloud) return cloud;
@@ -95,6 +97,10 @@ export const api = {
     const response = await fetch(`/api/projects/${id}/media`, { method: "POST", headers: headers(), body });
     return parse<PresentedProject>(response);
   },
+  removeClip: (id: string, clipId: string) =>
+    fetch(`/api/projects/${id}/clips/${encodeURIComponent(clipId)}`, { method: "DELETE", headers: headers() }).then(
+      (response) => parse<PresentedProject>(response),
+    ),
   uploadMusic: async (id: string, file: File) => {
     const cloud = await cloudUpload(id, file, "music");
     if (cloud) return cloud;
@@ -103,10 +109,12 @@ export const api = {
     const response = await fetch(`/api/projects/${id}/music`, { method: "POST", headers: headers(), body });
     return parse<PresentedProject>(response);
   },
-  transcribe: (id: string) =>
-    fetch(`/api/projects/${id}/transcribe`, { method: "POST", headers: headers() }).then((response) =>
-      parse<PresentedProject>(response),
-    ),
+  transcribe: (id: string, clipId?: string) =>
+    fetch(`/api/projects/${id}/transcribe`, {
+      method: "POST",
+      headers: headers(true),
+      body: JSON.stringify(clipId ? { clipId } : {}),
+    }).then((response) => parse<PresentedProject>(response)),
   playback: (id: string, playback: PlaybackContext) =>
     fetch(`/api/projects/${id}/playback`, {
       method: "POST",
