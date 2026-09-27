@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { PresentedProject, Proposal, ResolvedSegment } from "@cutback/timeline"
-import { api, type Health } from "./api"
+import { api, saveToken, type Health } from "./api"
 import { VoiceSession, type VoicePhase } from "./voice"
 import { FloatingAssistant } from "./editor/FloatingAssistant"
 import {
@@ -1079,6 +1079,7 @@ function MediaPanel({
   onSelectClip,
   onRemoveClip,
   onTranscribe,
+  onLoadDemo,
   onUpload,
 }: {
   project: PresentedProject | null
@@ -1088,6 +1089,7 @@ function MediaPanel({
   onSelectClip: (clipId: string) => void
   onRemoveClip: (clipId: string) => void
   onTranscribe: (clipId: string) => void
+  onLoadDemo: () => void
   onUpload: (files: File[]) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -1163,6 +1165,19 @@ function MediaPanel({
               : "Preparing transcript"}
           </p>
         </div>
+      )}
+      {/* The demo fixture ships with a prepared transcript, so it is the only
+          way to try the voice tools without paying for a transcription first.
+          The endpoint existed but nothing could reach it. */}
+      {clips.length === 0 && (
+        <button
+          className="ghost full demo-load"
+          disabled={busy}
+          onClick={onLoadDemo}
+        >
+          <Icon name="play" size={15} />
+          Load the demo project
+        </button>
       )}
       <input
         ref={inputRef}
@@ -1644,6 +1659,41 @@ async function createThumbnails(src: string, durationSeconds: number): Promise<s
   return frames
 }
 
+/**
+ * The server rejects every API call without x-cutback-token once
+ * CUTBACK_ACCESS_TOKEN is set, and nothing in the client could ever supply one,
+ * so such a deployment was unusable with no way to recover.
+ */
+function AccessTokenGate({ onSave }: { onSave: (token: string) => void }) {
+  const [value, setValue] = useState("")
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="token-title">
+        <h2 id="token-title">This server needs an access token</h2>
+        <p>
+          The server is running with <code>CUTBACK_ACCESS_TOKEN</code> set, so requests
+          must send <code>x-cutback-token</code>. Paste the value to continue.
+        </p>
+        <label className="token-field">
+          Access token
+          <input
+            type="password"
+            value={value}
+            autoFocus
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && value.trim()) onSave(value.trim())
+            }}
+          />
+        </label>
+        <button className="primary full" disabled={!value.trim()} onClick={() => onSave(value.trim())}>
+          Continue
+        </button>
+      </section>
+    </div>
+  )
+}
+
 export function EditorShell() {
   const [health, setHealth] = useState<Health | null>(null)
   const [project, setProject] = useState<PresentedProject | null>(null)
@@ -1672,6 +1722,7 @@ export function EditorShell() {
   const [clipFrames, setClipFrames] = useState<Record<string, string[]>>({})
   const [activeClipId, setActiveClipId] = useState<string | null>(null)
   const [waveform, setWaveform] = useState<number[]>([])
+  const [needsToken, setNeedsToken] = useState(false)
 
   const projectRef = useRef<PresentedProject | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -1718,6 +1769,9 @@ export function EditorShell() {
       .then(([nextHealth, restored]) => {
         if (!alive) return
         setHealth(nextHealth)
+        // The server tells us up front whether it is gated, so we can ask for
+        // the token instead of failing every request with a bare 401.
+        if (nextHealth.accessTokenRequired && !api.hasToken()) setNeedsToken(true)
         if (restored) remember(restored)
         else if (existing) localStorage.removeItem(PROJECT_KEY)
         setSaveStatus("Saved")
@@ -2167,6 +2221,21 @@ export function EditorShell() {
    * stuck until someone asks for it again. This is the only way back once an
    * upload or an earlier transcription did not finish.
    */
+  const loadDemo = useCallback(async () => {
+    setStatus("Loading the demo…", false, "busy")
+    try {
+      const next = await api.demo()
+      remember(next)
+      setActiveClipId(next.clips[0]?.id ?? null)
+      setSelectedSentenceId(null)
+      setCurrentTime(0)
+      setPlaying(false)
+      setStatus("Demo loaded. Try: “remove the long pauses”.")
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not load the demo.", false, "error")
+    }
+  }, [remember, setStatus])
+
   const transcribe = useCallback(async (clipId?: string) => {
     const current = projectRef.current
     if (!current) return
@@ -2470,6 +2539,7 @@ export function EditorShell() {
         onSelectClip={selectClip}
         onRemoveClip={(clipId) => void removeClip(clipId)}
         onTranscribe={(clipId) => void transcribe(clipId)}
+        onLoadDemo={() => void loadDemo()}
         onUpload={uploadFiles}
       />
     )
@@ -2627,6 +2697,15 @@ export function EditorShell() {
           captionsOn={captionsOn}
           onBegin={beginExport}
           onClose={() => setExportOpen(false)}
+        />
+      )}
+      {needsToken && (
+        <AccessTokenGate
+          onSave={(value) => {
+            saveToken(value)
+            // Reload so the bootstrap re-runs and every request carries the token.
+            window.location.reload()
+          }}
         />
       )}
     </main>

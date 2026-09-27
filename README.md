@@ -1,6 +1,6 @@
 # Cutback
 
-Cutback is a voice-controlled editor for a short video. You upload one clip, watch it, and tell an [AssemblyAI](https://www.assemblyai.com/docs/voice-agents/voice-agent-api) voice agent what to change. The agent calls editing tools. Preview and the exported MP4 are built from the same edit.
+Cutback is a voice-controlled editor for short video. You add one or more clips, watch them, and tell an [AssemblyAI](https://www.assemblyai.com/docs/voice-agents/voice-agent-api) voice agent what to change. The agent calls editing tools. The preview and the exported MP4 are built from the same edit.
 
 ## What you need
 
@@ -8,11 +8,13 @@ One credential:
 
 - `ASSEMBLYAI_API_KEY` from [the AssemblyAI dashboard](https://www.assemblyai.com/dashboard/api-keys)
 
-The server keeps that key. The browser asks the server for a one-time voice token (`GET https://agents.assemblyai.com/v1/token`) and connects to `wss://agents.assemblyai.com/v1/ws`. Transcription is a separate pre-recorded job: upload to `https://api.assemblyai.com/v2/upload`, then `POST /v2/transcript` with `speech_models: ["universal-3-5-pro", "universal-2"]`, then poll and fetch sentences.
+The server keeps that key. The browser asks the server for a one-time voice token (`GET https://agents.assemblyai.com/v1/token`) and connects to `wss://agents.assemblyai.com/v1/ws`. Transcription is a separate pre-recorded job: stream the upload to `https://api.assemblyai.com/v2/upload`, then `POST /v2/transcript` with `speech_models: ["universal-3-5-pro", "universal-2"]`, then poll and fetch sentences.
 
 The voice agent uses AssemblyAI's managed model through an inline `session.update`. An OpenAI or OpenRouter key is not used.
 
-Copy `.env.example` to `.env` and set the key. Set `CUTBACK_ACCESS_TOKEN` before you put the server on a public URL. Anyone who can open the app can otherwise start sessions billed to your key.
+Copy `.env.example` to `.env` and set the key.
+
+If you put the server on a public URL, set `CUTBACK_ACCESS_TOKEN` first. Anyone who can open the app can otherwise start voice sessions billed to your key. The client sends it as `x-cutback-token`; the UI prompts for it on a 401 and keeps it in `sessionStorage`.
 
 ## Run it
 
@@ -32,27 +34,31 @@ npm run build
 npm start
 ```
 
-Docker, for a host that can run a long-lived process:
-
-```bash
-docker compose up --build
-```
-
 Do not deploy the export or transcription work to a short-lived frontend function. FFmpeg runs in this Node process. A volume mounted at `/data` keeps uploads and renders.
 
-## How an edit is stored
+## Clips and the timeline
 
-The original file stays on disk. The project JSON stores keep-spans in source milliseconds, a pause policy, caption settings, and a framing choice. Undo and redo are snapshots of that state.
+A project holds a list of clips, laid end to end on one flattened source timeline. A clip's `offsetMs` is where it starts on that timeline, so any source time in the project maps to exactly one clip. Adding a clip keeps the cuts already made on the earlier ones.
 
-`resolveSegments` turns spans plus the pause policy into source ranges and matching output times. The player, the on-screen captions, and the FFmpeg export all use those ranges. FFmpeg is invoked with an argument array. The model never supplies a shell command.
+Keep-spans are stored in source milliseconds, alongside a pause policy, caption settings and a framing choice. Undo and redo are snapshots of that state. `resolveSegments` turns spans plus the pause policy into source ranges and matching output times, and splits them at clip boundaries so no segment ever crosses two clips. The player, the on-screen captions and the FFmpeg export all use those ranges.
 
-Tool calls are idempotent by `call_id`. A proposal that was already applied returns the same summary and does not cut again. A proposal from an older revision is rejected. Ambiguous quotes and a playhead sitting in a pause return `needs_clarification` and change nothing.
+FFmpeg receives one input per clip and levels mixed resolutions and frame rates before concatenating, so clips shot at different settings still join. A clip with no audio is padded with silence to keep audio in step with video. FFmpeg is invoked with an argument array; the model never supplies a shell command.
 
-The browser freezes the playhead when local voice activity starts, and again when AssemblyAI emits `input.speech.started`. That snapshot is what “remove that bit” uses. The mic uses echo cancellation with noise suppression off, matching the voice-agent browser guide. Open mic ducks the video. Push-to-talk (hold `V` or hold the button) leaves the video at full volume until you talk. Starting to speak pauses playback so the video is not treated as an instruction.
+Tool calls are idempotent by `call_id`. A proposal that was already applied returns the same summary and does not cut again. A proposal from an older revision is rejected. Ambiguous quotes and a playhead sitting in a pause return `needs_clarification` and change nothing. Read-only tools are not memoised, so a long transcript does not bloat the project file.
+
+Transcribing a clip keeps the existing edit, including cuts made on clips that were already done. Keep-spans are absolute source times, so a new transcript cannot invalidate them.
+
+## Voice
+
+The browser freezes the playhead when local voice activity starts, and again when AssemblyAI emits `input.speech.started`. That snapshot is what “remove that bit” uses, and it is a real source time on the combined timeline, not a position inside whichever file happens to be loaded. Starting to speak pauses playback so the video is not treated as an instruction. The mic uses echo cancellation with noise suppression off, matching the voice-agent browser guide.
+
+The assistant is a floating panel you can drag, reposition with `Alt` + arrow keys, and collapse with `Escape`. It does not open the microphone until you ask it to.
 
 ## Demo
 
-`samples/demo.mp4` is generated here with Windows Speech and FFmpeg. Sentence times in `samples/demo.transcript.json` match that audio. Word times inside a sentence are evenly split and labeled as a fixture (`transcriptSource: "demo-fixture"`). Use **Transcribe** to replace them with AssemblyAI word timestamps.
+Open the **Media** panel and choose **Load the demo project**. That creates a project from `samples/demo.mp4` with the prepared transcript in `samples/demo.transcript.json`, so you can try the voice tools without paying for a transcription first. Use **Transcribe this clip** to replace the fixture with real AssemblyAI word timestamps.
+
+`samples/demo.mp4` is generated with `npm run sample`. Word times inside a sentence in the fixture are evenly split and labelled `transcriptSource: "demo-fixture"`.
 
 With the demo loaded, a spoken pass is:
 
@@ -60,30 +66,32 @@ With the demo loaded, a spoken pass is:
 2. “Remove the long pauses.”
 3. “Keep the pause before the last sentence.”
 4. “Add captions.”
-5. “Make it vertical.”
-6. “Undo that.”
-7. “Export the video.”
+5. “Turn captions off.”
+6. “Make it vertical.”
+7. “Undo that.”
+8. “Export the video.”
 
 The agent should only say a change is done after the tool result says `applied`, and only say the file is ready after export returns `completed`.
 
 ## Limits
 
-- One video per project, up to 2 minutes and 200 MB.
+- Up to 2 minutes of video and 200 MB per file, across all clips in a project. Clips are added end to end; there is no drag-to-reorder in the timeline, but sections within the sequence can be reordered by voice.
 - Real transcription and the live voice session need `ASSEMBLYAI_API_KEY`. The demo fixture is not a simulated voice call, and the MP4 export is a real FFmpeg render.
-- Projects live on local disk in one long-running process. Refresh restores segment order, edit history, captions, framing, audio settings, and pending cut proposals.
-- Retrying transcription replaces the transcript and resets the edit, because word ids are rebuilt.
-- Caption burn-in needs Arial, Liberation Sans, or DejaVu Sans. DejaVu Sans is bundled in `assets/fonts`, so exports with captions work on hosts without system fonts. The preview and export use the same caption settings and edited timeline.
+- A project needs a transcript before it can be edited, because cuts target sentences. Any clip without words shows a **Transcribe** action.
+- Projects live on local disk in one long-running process. Refresh restores clip order, segment order, edit history, captions, framing, audio settings and pending cut proposals.
+- Caption burn-in needs Arial, Liberation Sans, or DejaVu Sans. DejaVu Sans is bundled in `assets/fonts`, so exports with captions work on hosts without system fonts. The preview and the export share the same caption settings, the same position and the same edited timeline; the burn-in is scaled to the real output frame, so a vertical export places captions where the preview shows them.
+- Background music is mixed under the speech with ducking and fades. The preview ducks on the same rule the export uses.
 - Cutback supports reordered source segments, but it does not invent missing speech or perform automatic subject tracking.
-- The editor has responsive phone controls and safe-area handling. It does not include accounts.
+- The editor has responsive phone controls, a status line and safe-area handling. The microphone needs a secure context, so on a handset you need HTTPS or localhost rather than a plain LAN address. It does not include accounts.
 
 ## Deployment
 
-The complete editor deploys to Vercel as a single Function (`vercel deploy --prod`, remote build). Projects, uploaded media, and rendered exports live in Vercel Blob storage, FFmpeg comes from `ffmpeg-static` (its Linux binary is fetched by the remote build), exports run inside the Function under a 300 second limit, and the DejaVu Sans font in `assets/fonts` is bundled so caption burn-in works without system fonts. Required environment variables: `ASSEMBLYAI_API_KEY`, `BLOB_READ_WRITE_TOKEN`. The Function's `/tmp` is ephemeral, so durable state always comes from Blob storage. The included Docker setup remains the option for local or long-lived hosting with disk storage.
+The complete editor deploys to Vercel as a single Function (`vercel deploy --prod`, remote build). Projects, uploaded media, and rendered exports live in Vercel Blob storage, FFmpeg comes from `ffmpeg-static` (its Linux binary is fetched by the remote build), exports run inside the Function under a 300 second limit, and the DejaVu Sans font in `assets/fonts` is bundled so caption burn-in works without system fonts. Required environment variables: `ASSEMBLYAI_API_KEY`, `BLOB_READ_WRITE_TOKEN`, and `CUTBACK_ACCESS_TOKEN` for any public URL. The Function's `/tmp` is ephemeral, so durable state always comes from Blob storage. The included Docker setup remains the option for local or long-lived hosting with disk storage.
 
 ## Layout
 
-- `packages/timeline` — edit math, tool behavior, voice tool schema, FFmpeg argument builder, tests
+- `packages/timeline` — edit math, clip flattening, tool behaviour, voice tool schema, FFmpeg argument builder, tests
 - `apps/server` — upload, AssemblyAI transcription, voice tokens, export
-- `apps/web` — player, transcript, timeline, voice session
+- `apps/web` — player, transcript, timeline, clip bin, voice session
 - `samples` — the generated demo
 - `scripts/generate-sample.ts` — rebuilds the demo

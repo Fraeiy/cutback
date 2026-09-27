@@ -164,6 +164,11 @@ h2 { font-size: 16px; margin: 0; letter-spacing: -.2px; }
 .toggle-row.compact i::after { width: 14px; height: 14px; top: 3px; left: 3px; }
 .toggle-row.compact input:checked + i::after { left: 17px; }
 .inspector-empty { margin: 18px 2px; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.token-field { display: flex; flex-direction: column; gap: 6px; margin: 16px 0; font-size: 12px; color: var(--muted); }
+.token-field input { padding: 9px 11px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-2); color: var(--text); font-size: 13px; }
+.modal code { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px; color: var(--mint); }
+.ghost.full { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.demo-load { margin-top: 12px; }
 /* Honest banner when the backend cannot do part of its job. */
 .env-notice { position: fixed; top: 60px; left: 50%; translate: -50%; z-index: 60; max-width: min(92vw, 520px); padding: 7px 12px; border: 1px solid #7a5a20; border-radius: 7px; background: #2a2113f2; color: #ffd9a0; font-size: 11px; line-height: 1.45; text-align: center; }
 .caption-track.muted .caption-clips span { background: transparent; border-style: dashed; color: var(--muted); }

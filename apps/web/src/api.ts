@@ -24,6 +24,10 @@ function token(): string {
   return sessionStorage.getItem("cutback.access") ?? "";
 }
 
+export function saveToken(value: string): void {
+  sessionStorage.setItem("cutback.access", value);
+}
+
 function headers(json = false): Headers {
   const value = new Headers();
   const access = token();
@@ -79,6 +83,7 @@ async function cloudUpload(id: string, file: File, kind: "media" | "music"): Pro
 }
 
 export const api = {
+  hasToken: () => token().length > 0,
   health: () => fetch("/api/health").then((response) => parse<Health>(response)),
   create: (title?: string) =>
     fetch("/api/projects", { method: "POST", headers: headers(true), body: JSON.stringify({ title }) }).then((response) =>
