@@ -14,7 +14,6 @@ import {
   MAX_UPLOAD_BYTES,
   applyTool,
   attachClip,
-  defaultEdit,
   present,
   projectSourceDurationMs,
   removeClip,
@@ -492,10 +491,10 @@ async function runTranscription(id: string, key: string, clipIds: string[]): Pro
       await withProjectLock(id, async () => {
         const current = await loadProject(id);
         setClipTranscript(current, clipId, transcript, "assemblyai");
-        // New words change what the spans mean, so the edit starts clean.
-        current.edit = defaultEdit(projectSourceDurationMs(current));
-        current.undo = [];
-        current.redo = [];
+        // Keep spans are absolute source times, so a new transcript does not
+        // invalidate them. Resetting the edit here used to silently throw away
+        // cuts the creator had already made. Only the pending proposals go,
+        // because they were resolved against sentences that may no longer exist.
         current.proposals = [];
         current.lastTarget = null;
         current.highlight = null;

@@ -1043,6 +1043,7 @@ function MediaPanel({
   clipFrames,
   onSelectClip,
   onRemoveClip,
+  onTranscribe,
   onUpload,
 }: {
   project: PresentedProject | null
@@ -1051,6 +1052,7 @@ function MediaPanel({
   clipFrames: Record<string, string[]>
   onSelectClip: (clipId: string) => void
   onRemoveClip: (clipId: string) => void
+  onTranscribe: (clipId: string) => void
   onUpload: (files: File[]) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -1083,9 +1085,17 @@ function MediaPanel({
                 <div>
                   <b title={clip.media.filename}>{clip.media.filename}</b>
                   <span>{clip.media.width} × {clip.media.height} · {formatTime(clip.media.durationMs / 1000)}</span>
-                  <span className={transcribed ? "clip-state ok" : "clip-state"}>
-                    {transcribed ? "Transcribed" : "Needs transcript"}
-                  </span>
+                  {transcribed ? (
+                    <span className="clip-state ok">Transcribed</span>
+                  ) : (
+                    <button
+                      className="clip-state action"
+                      disabled={busy}
+                      onClick={() => onTranscribe(clip.id)}
+                    >
+                      {phase === "transcribing" ? "Transcribing…" : "Transcribe this clip"}
+                    </button>
+                  )}
                 </div>
                 <button
                   className="media-remove"
@@ -1990,8 +2000,10 @@ export function EditorShell() {
       setSelectedSentenceId(null)
       setCurrentTime(0)
       setPlaying(false)
-      if (!health?.assemblyai) throw new Error("ASSEMBLYAI_API_KEY is missing on the server.")
-      // Transcribes every clip that has no words yet.
+      // No client-side pre-flight check on the API key. `health` loads in a
+      // background effect, so testing it here reported a missing key whenever
+      // it had not resolved yet, and the upload had already succeeded by then.
+      // The server returns a clear message when the key really is absent.
       setStatus(files.length > 1 ? "Transcribing clips…" : "Transcribing…", false)
       const transcribing = await api.transcribe(latest.id)
       remember(transcribing)
@@ -2000,11 +2012,29 @@ export function EditorShell() {
     } finally {
       setUploading(false)
     }
-  }, [health?.assemblyai, remember, setStatus])
+  }, [remember, setStatus])
 
   const uploadFiles = useCallback((files: File[]) => {
     void upload(files)
   }, [upload])
+
+  /**
+   * Transcription is the gateway to every edit, so a clip that has no words is
+   * stuck until someone asks for it again. This is the only way back once an
+   * upload or an earlier transcription did not finish.
+   */
+  const transcribe = useCallback(async (clipId?: string) => {
+    const current = projectRef.current
+    if (!current) return
+    setStatus("Transcribing…", false)
+    try {
+      const next = await api.transcribe(current.id, clipId)
+      remember(next)
+      setStatus("Transcription started.", false)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Transcription failed.", false)
+    }
+  }, [remember, setStatus])
 
   const removeClip = useCallback(async (clipId: string) => {
     const current = projectRef.current
@@ -2240,6 +2270,7 @@ export function EditorShell() {
         clipFrames={clipFrames}
         onSelectClip={selectClip}
         onRemoveClip={(clipId) => void removeClip(clipId)}
+        onTranscribe={(clipId) => void transcribe(clipId)}
         onUpload={uploadFiles}
       />
     )

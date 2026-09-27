@@ -199,6 +199,10 @@ h2 { font-size: 16px; margin: 0; letter-spacing: -.2px; }
 .media-remove:hover:not(:disabled) { background: #3a2226; color: #ffb4ab; }
 .media-remove:disabled { opacity: .3; cursor: not-allowed; }
 .clip-state.ok { color: #7fe0ac; }
+/* Untranscribed clips get a real action rather than a dead status label. */
+.clip-state.action { align-self: flex-start; margin-top: 2px; padding: 4px 9px; border: 1px solid var(--accent); border-radius: 5px; background: transparent; color: var(--accent); font-size: 10px; cursor: pointer; }
+.clip-state.action:hover:not(:disabled) { background: #7af4d61f; }
+.clip-state.action:disabled { opacity: .55; cursor: progress; }
 .music-card .icon-btn { margin-left: auto; }
 .ratio-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
 .ratio-grid button { height: 88px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 9px; font-size: 10px; cursor: pointer; }
