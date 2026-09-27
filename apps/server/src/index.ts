@@ -686,6 +686,15 @@ app.post("/api/projects/:id/tools/:name", async (request, reply) => {
   }
 });
 
+/** `stat` that reports a missing file as null instead of throwing a 500. */
+async function statOrNull(filePath: string) {
+  try {
+    return await stat(filePath);
+  } catch {
+    return null;
+  }
+}
+
 /** Resolve `?clip=` to a clip, defaulting to the first one. */
 function requestedClip(project: Project, query: unknown) {
   const clips = project.clips ?? [];
@@ -732,7 +741,8 @@ app.get("/api/projects/:id/media", async (request, reply) => {
   if (!clip) return reply.code(404).send({ error: "No video yet." });
   if (usesBlobStorage()) return reply.redirect(await signedReadUrl(clip.media.storedName));
   const filePath = path.join(projectDir(id), clip.media.storedName);
-  const info = await stat(filePath);
+  const info = await statOrNull(filePath);
+  if (!info) return reply.code(404).send({ error: "That clip's file is missing from disk." });
   const range = request.headers.range;
   reply.header("Accept-Ranges", "bytes");
   reply.header("Content-Type", clip.media.mime || "video/mp4");
@@ -771,9 +781,17 @@ app.get("/api/projects/:id/export", async (request, reply) => {
     }
     return reply.redirect(await signedReadUrl(project.jobs.export.file, 15 * 60 * 1000));
   }
+  // The blob path checks the job state; the local path only checked that a file
+  // existed, so a render left over from an earlier session could be downloaded
+  // as if it were the current edit.
+  const local = await loadProject(id);
+  if (local.jobs.export.status !== "completed") {
+    return reply.code(404).send({ error: "Export the edit before downloading." });
+  }
   const filePath = path.join(projectDir(id), "export.mp4");
   if (!existsSync(filePath)) return reply.code(404).send({ error: "Export the edit before downloading." });
-  const info = await stat(filePath);
+  const info = await statOrNull(filePath);
+  if (!info) return reply.code(404).send({ error: "That export is no longer on disk." });
   reply.header("Content-Type", "video/mp4");
   reply.header("Content-Length", info.size);
   reply.header("Content-Disposition", 'attachment; filename="cutback.mp4"');

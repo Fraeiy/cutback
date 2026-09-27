@@ -25,6 +25,9 @@ export function FloatingAssistant({
   level,
   detail,
   lines,
+  pushToTalk,
+  onTogglePushToTalk,
+  onHold,
   onToggle,
   onStop,
 }: {
@@ -32,6 +35,10 @@ export function FloatingAssistant({
   level: number;
   detail: string | null;
   lines: Array<{ who: "user" | "agent"; text: string }>;
+  /** When on, audio only reaches the agent while the creator is holding. */
+  pushToTalk: boolean;
+  onTogglePushToTalk: () => void;
+  onHold: (held: boolean) => void;
   onToggle: () => void;
   onStop: () => void;
 }) {
@@ -50,6 +57,13 @@ export function FloatingAssistant({
     moved: boolean;
   } | null>(null);
   const suppressClick = useRef(false);
+  /** Pointer is down on the launcher while push to talk is on. */
+  const holding = useRef(false);
+  /** That press turned into a drag, so it was not a talk. */
+  const moved = useRef(false);
+  /** Audio is actually being sent right now. */
+  const talking = useRef(false);
+  const holdTimer = useRef<number | null>(null);
   const isError = state === "Permission error" || state === "Connection error";
   const active = state !== "Disconnected" && !isError;
   function clamp(point: Point): Point {
@@ -228,8 +242,45 @@ export function FloatingAssistant({
       {!open ? (
         <button
           ref={launcher}
-          className="assistant-launcher"
+          className={`assistant-launcher ${pushToTalk ? "ptt" : ""}`}
           {...dragEvents}
+          // Push to talk shares this button with dragging, so a hold only counts
+          // once the pointer has stayed put: a moved pointer is a drag.
+          onPointerDown={(event) => {
+            if (!pushToTalk) return;
+            holding.current = true;
+            moved.current = false;
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+            // Short grace period: a tap or a drag must not blip the microphone,
+            // only a deliberate press-and-hold should start sending audio.
+            holdTimer.current = window.setTimeout(() => {
+              if (holding.current && !moved.current) {
+                talking.current = true;
+                onHold(true);
+              }
+            }, 140);
+          }}
+          onPointerMove={() => {
+            if (!holding.current) return;
+            moved.current = true;
+            if (holdTimer.current) window.clearTimeout(holdTimer.current);
+          }}
+          onPointerUp={() => {
+            if (holdTimer.current) window.clearTimeout(holdTimer.current);
+            if (talking.current) {
+              talking.current = false;
+              onHold(false);
+            }
+            holding.current = false;
+          }}
+          onPointerCancel={() => {
+            if (holdTimer.current) window.clearTimeout(holdTimer.current);
+            if (talking.current) {
+              talking.current = false;
+              onHold(false);
+            }
+            holding.current = false;
+          }}
           onClick={() => {
             if (!suppressClick.current) setOpen(true);
             suppressClick.current = false;
@@ -240,7 +291,11 @@ export function FloatingAssistant({
               : "Ask Cutback. Open voice assistant"
           }
           aria-expanded={false}
-          title="Ask Cutback · drag to move · Alt + arrow keys to reposition"
+          title={
+            pushToTalk
+              ? "Hold to talk · drag to move · Alt + arrow keys to reposition"
+              : "Ask Cutback · drag to move · Alt + arrow keys to reposition"
+          }
         >
           <Mic />
           <span className="assistant-status-dot" />
@@ -261,8 +316,18 @@ export function FloatingAssistant({
             </span>
             <div>
               <b>Ask Cutback</b>
-              <small>{active ? state : "Your voice editing assistant"}</small>
+              <small>
+                {active ? state : pushToTalk ? "Hold V to talk" : "Your voice editing assistant"}
+              </small>
             </div>
+            <button
+              className={`assistant-ptt ${pushToTalk ? "on" : ""}`}
+              onClick={onTogglePushToTalk}
+              aria-pressed={pushToTalk}
+              title="Push to talk: only send audio while V is held, so the agent never hears your video"
+            >
+              PTT
+            </button>
             <button
               ref={minimize}
               className="icon-btn"

@@ -52,6 +52,8 @@ Transcribing a clip keeps the existing edit, including cuts made on clips that w
 
 The browser freezes the playhead when local voice activity starts, and again when AssemblyAI emits `input.speech.started`. That snapshot is what “remove that bit” uses, and it is a real source time on the combined timeline, not a position inside whichever file happens to be loaded. Starting to speak pauses playback so the video is not treated as an instruction. The mic uses echo cancellation with noise suppression off, matching the voice-agent browser guide.
 
+Turn on **PTT** in the assistant panel and audio only reaches the agent while you hold `V`, or hold the assistant button. The video can then play at full volume without the agent hearing it as an instruction. The hold has a short grace period, so an ordinary click or a drag of the button never opens the microphone by accident.
+
 The assistant is a floating panel you can drag, reposition with `Alt` + arrow keys, and collapse with `Escape`. It does not open the microphone until you ask it to.
 
 ## Demo
@@ -66,10 +68,11 @@ With the demo loaded, a spoken pass is:
 2. “Remove the long pauses.”
 3. “Keep the pause before the last sentence.”
 4. “Add captions.”
-5. “Turn captions off.”
-6. “Make it vertical.”
-7. “Undo that.”
-8. “Export the video.”
+5. “Highlight the current word in yellow.”
+6. “Turn captions off.”
+7. “Make it vertical.”
+8. “Undo that.”
+9. “Export the video.”
 
 The agent should only say a change is done after the tool result says `applied`, and only say the file is ready after export returns `completed`.
 

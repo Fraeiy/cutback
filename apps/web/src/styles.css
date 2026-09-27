@@ -33,6 +33,11 @@ button:disabled { opacity: .35; cursor: default; }
 .saved.tone-error i { background: #ff7a6b; }
 .saved.tone-busy, .saved.tone-error { color: var(--text); }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+/* No looping animation for anyone who has asked for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .saved.tone-busy i { animation: none; }
+  *, *::before, *::after { transition-duration: .01ms !important; }
+}
 .icon-btn { width: 36px; height: 36px; display: inline-grid; place-items: center; border: 0; background: transparent; border-radius: 8px; cursor: pointer; }
 .icon-btn:hover { background: var(--panel-3); }
 .primary { background: var(--mint); border: 1px solid transparent; color: #102016; border-radius: 8px; font-weight: 600; cursor: pointer; }
@@ -93,6 +98,17 @@ select { color: var(--text); background: var(--panel-3); border: 1px solid var(-
 .time, time, .timeline-meta, .ruler span, .playhead span, .mini-ruler { font-family: "JetBrains Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
 input[type="range"] { --progress: 45%; appearance: none; height: 3px; border-radius: 9px; background: linear-gradient(to right,var(--mint) 0 var(--progress),#444a4f var(--progress) 100%); accent-color: var(--mint); }
 input[type="range"]::-webkit-slider-thumb { appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.25); }
+/* Touch: 13px is unusable with a thumb, and the scrubber is the primary
+   control. The visual dot stays small; the hit area grows around it. */
+@media (pointer: coarse) {
+  input[type="range"] { height: 24px; background: none; }
+  input[type="range"]::-webkit-slider-thumb { width: 22px; height: 22px; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+  input[type="range"]::-moz-range-thumb { width: 22px; height: 22px; border: 0; }
+  .swatch { width: 34px; height: 34px; }
+  .media-remove, .icon-btn { min-width: 40px; min-height: 40px; }
+  .segmented.three button, .mobile-tabs button { min-height: 40px; }
+  .preset { height: 76px; }
+}
 
 .desktop-inspector { min-height: 0; overflow: hidden; background: var(--panel); }
 .inspector { width: 100%; height: 100%; min-height: 0; display: flex; flex-direction: column; padding: 0 14px 14px; }
@@ -164,6 +180,11 @@ h2 { font-size: 16px; margin: 0; letter-spacing: -.2px; }
 .toggle-row.compact i::after { width: 14px; height: 14px; top: 3px; left: 3px; }
 .toggle-row.compact input:checked + i::after { left: 17px; }
 .inspector-empty { margin: 18px 2px; font-size: 12px; line-height: 1.5; color: var(--muted); }
+/* Push to talk toggle in the assistant header. */
+.assistant-ptt { flex: none; height: 22px; padding: 0 8px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--muted); font-size: 9px; letter-spacing: .06em; cursor: pointer; }
+.assistant-ptt:hover { color: var(--text); }
+.assistant-ptt.on { border-color: var(--mint); color: #09271f; background: var(--mint); }
+.assistant-launcher.ptt { box-shadow: 0 0 0 2px var(--mint), 0 5px 22px #0006; }
 .token-field { display: flex; flex-direction: column; gap: 6px; margin: 16px 0; font-size: 12px; color: var(--muted); }
 .token-field input { padding: 9px 11px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-2); color: var(--text); font-size: 13px; }
 .modal code { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px; color: var(--mint); }

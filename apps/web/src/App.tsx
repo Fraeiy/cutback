@@ -160,7 +160,12 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
       strokeLinecap="round"
       strokeLinejoin="round"
     >
-      {paths[name] || paths.more}
+      {/* An unknown name used to render the "more" glyph, so a typo in a tool
+          label showed up as three dots instead of failing. */}
+      {paths[name] ?? (() => {
+        if (import.meta.env.DEV) console.error(`Unknown icon name: ${String(name)}`)
+        return null
+      })()}
     </svg>
   )
 }
@@ -249,13 +254,6 @@ export function EditorHeader({
         {saveStatus}
       </div>
       <div className="mobile-only mobile-head">
-        <button
-          className="icon-btn"
-          aria-label="Back"
-          onClick={() => window.history.back()}
-        >
-          <Icon name="back" />
-        </button>
         <Brand />
         <b className="mobile-project">{title}</b>
       </div>
@@ -1723,6 +1721,7 @@ export function EditorShell() {
   const [activeClipId, setActiveClipId] = useState<string | null>(null)
   const [waveform, setWaveform] = useState<number[]>([])
   const [needsToken, setNeedsToken] = useState(false)
+  const [pushToTalk, setPushToTalk] = useState(false)
 
   const projectRef = useRef<PresentedProject | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -1752,11 +1751,17 @@ export function EditorShell() {
   }, [])
 
   const remember = useCallback((next: PresentedProject) => {
+    // Rebuilding the system prompt re-sends every sentence over the socket, so
+    // only do it when the project actually changed. The poll runs every 850ms
+    // and was re-sending a full transcript about once a second.
+    const previous = projectRef.current
     projectRef.current = next
     setProject(next)
     setTitle(next.title)
     localStorage.setItem(PROJECT_KEY, next.id)
-    voiceRef.current?.refreshPrompt(next)
+    if (!previous || previous.revision !== next.revision || previous.transcript !== next.transcript) {
+      voiceRef.current?.refreshPrompt(next)
+    }
   }, [])
 
   useEffect(() => {
@@ -1919,6 +1924,40 @@ export function EditorShell() {
       if (statusTimerRef.current) window.clearTimeout(statusTimerRef.current)
     }
   }, [])
+
+  // Push to talk: with it on, the agent only hears audio while the creator is
+  // actually holding, so it cannot pick up the video as an instruction.
+  useEffect(() => {
+    voiceRef.current?.setPushToTalk(pushToTalk)
+  }, [pushToTalk])
+
+  useEffect(() => {
+    if (!pushToTalk) return
+    const isTyping = (target: EventTarget | null) => {
+      const el = target as HTMLElement | null
+      return Boolean(el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable))
+    }
+    const down = (event: KeyboardEvent) => {
+      if (event.key !== "v" && event.key !== "V") return
+      if (event.repeat || isTyping(event.target)) return
+      event.preventDefault()
+      voiceRef.current?.setHeld(true)
+    }
+    const up = (event: KeyboardEvent) => {
+      if (event.key !== "v" && event.key !== "V") return
+      voiceRef.current?.setHeld(false)
+    }
+    // Losing focus mid-hold would otherwise leave the microphone open.
+    const blur = () => voiceRef.current?.setHeld(false)
+    window.addEventListener("keydown", down)
+    window.addEventListener("keyup", up)
+    window.addEventListener("blur", blur)
+    return () => {
+      window.removeEventListener("keydown", down)
+      window.removeEventListener("keyup", up)
+      window.removeEventListener("blur", blur)
+    }
+  }, [pushToTalk])
 
   const phase: ProjectPhase = uploading
     ? "uploading"
@@ -2665,6 +2704,9 @@ export function EditorShell() {
             level={voiceLevel}
             detail={voiceDetail}
             lines={voiceLines}
+            pushToTalk={pushToTalk}
+            onTogglePushToTalk={() => setPushToTalk((value) => !value)}
+            onHold={(held) => voiceRef.current?.setHeld(held)}
             onToggle={voice === "Disconnected" || voice === "Permission error" || voice === "Connection error" ? startVoice : stopVoice}
             onStop={stopVoice}
           />
