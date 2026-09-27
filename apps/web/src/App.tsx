@@ -105,10 +105,17 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
         <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
       </>
     ),
+    // Reserved for the voice assistant, which draws its own mic glyph.
     upload: (
       <>
         <path d="m12 16V4m-5 5 5-5 5 5" />
         <path d="M4 15v5h16v-5" />
+      </>
+    ),
+    frame: (
+      <>
+        <path d="M4 8V5h3M20 8V5h-3M4 16v3h3M20 16v3h-3" />
+        <rect x="8" y="8" width="8" height="8" rx="1" />
       </>
     ),
     more: (
@@ -365,6 +372,8 @@ export function VideoPreview({
   captionSize,
   captionPosition,
   captionPositionY,
+  wordHighlight,
+  highlightColor,
   showGuides,
   mode,
   onPlay,
@@ -385,6 +394,10 @@ export function VideoPreview({
   captionPosition: string
   /** Normalised 0-1 vertical anchor, matching what the export burns in. */
   captionPositionY: number
+  /** Karaoke-style per-word highlight, matching the burned export. */
+  wordHighlight: boolean
+  /** Hex colour applied to the word currently being spoken. */
+  highlightColor: string
   showGuides: boolean
   mode: "original" | "edited"
   onPlay: () => void
@@ -500,8 +513,6 @@ export function VideoPreview({
               muted={muted}
               playsInline
               onTimeUpdate={(event) => onVideoTimeUpdate(event.currentTarget)}
-              onPlay={() => undefined}
-              onPause={() => undefined}
               style={{
                 objectFit: framing?.mode && framing.mode !== "original" ? "cover" : "contain",
                 objectPosition: `${(framing?.focus ?? 0.5) * 100}% ${(framing?.focusY ?? 0.5) * 100}%`,
@@ -522,7 +533,22 @@ export function VideoPreview({
                 { "--caption-size": `${captionSize}px` } as React.CSSProperties
               }
             >
-              {activeCue.text}
+              {/* With word highlight on, the spoken word gets the highlight
+                  colour, matching how the export burns the same cue in. */}
+              {wordHighlight && activeCue.words.length > 0
+                ? activeCue.words.map((word) => {
+                    const spoken = currentTime * 1000 >= word.outputStartMs && currentTime * 1000 <= word.outputEndMs;
+                    return (
+                      <span
+                        key={word.id}
+                        className={spoken ? "word spoken" : "word"}
+                        style={spoken ? { background: highlightColor, color: "#102016" } : undefined}
+                      >
+                        {word.text}
+                      </span>
+                    );
+                  })
+                : activeCue.text}
             </div>
           )}
         </div>
@@ -787,7 +813,6 @@ export function CaptionInspector({
   style,
   size,
   position,
-  safe,
   enabled,
   textColor,
   highlightColor,
@@ -795,14 +820,12 @@ export function CaptionInspector({
   onStyle,
   onSize,
   onPosition,
-  onSafe,
   onTextColor,
   onHighlightColor,
 }: {
   style: CaptionStyle
   size: number
   position: string
-  safe: boolean
   enabled: boolean
   textColor: string
   highlightColor: string
@@ -810,7 +833,6 @@ export function CaptionInspector({
   onStyle: (style: CaptionStyle) => void
   onSize: (size: number) => void
   onPosition: (position: string) => void
-  onSafe: (safe: boolean) => void
   onTextColor: (color: string) => void
   onHighlightColor: (color: string) => void
 }) {
@@ -834,7 +856,7 @@ export function CaptionInspector({
       <fieldset>
         <legend>Caption style</legend>
         <div className="preset-grid">
-          {(["clean", "bold", "highlight"] as CaptionStyle[]).map((name) => (
+          {(["clean", "highlight"] as CaptionStyle[]).map((name) => (
             <Preset
               key={name}
               name={name}
@@ -901,15 +923,6 @@ export function CaptionInspector({
           ))}
         </div>
       </fieldset>
-      <label className="toggle-row">
-        <span>Keep within safe area</span>
-        <input
-          type="checkbox"
-          checked={safe}
-          onChange={(event) => onSafe(event.target.checked)}
-        />
-        <i />
-      </label>
         </>
       ) : (
         <p className="inspector-empty">Captions are hidden in the preview and the exported MP4.</p>
@@ -1027,6 +1040,7 @@ function MediaPanel({
   project,
   phase,
   activeClipId,
+  clipFrames,
   onSelectClip,
   onRemoveClip,
   onUpload,
@@ -1034,6 +1048,7 @@ function MediaPanel({
   project: PresentedProject | null
   phase: ProjectPhase
   activeClipId: string | null
+  clipFrames: Record<string, string[]>
   onSelectClip: (clipId: string) => void
   onRemoveClip: (clipId: string) => void
   onUpload: (files: File[]) => void
@@ -1062,7 +1077,7 @@ function MediaPanel({
                   aria-pressed={activeClipId === clip.id}
                   onClick={() => onSelectClip(clip.id)}
                 >
-                  <img src={mediaImage} alt="" />
+                  <img src={clipFrames[clip.id]?.[0] ?? mediaImage} alt="" />
                   <span className="media-index">{index + 1}</span>
                 </button>
                 <div>
@@ -1125,7 +1140,7 @@ function MediaPanel({
         {clips.length > 0 ? "Add more clips" : "Select local video"}
       </button>
       <p className="helper">
-        MP4, MOV, WEBM or MKV. Select several at once to build a sequence. 2 minutes and 200 MB each.
+        MP4, MOV, WEBM or MKV. Select several at once to build a sequence. 200 MB each, 2 minutes in total.
       </p>
     </section>
   )
@@ -1249,7 +1264,7 @@ export function HistoryPanel({
 
 export function Timeline({
   project,
-  thumbnails,
+  clipFrames,
   waveform,
   currentTime,
   zoom,
@@ -1258,7 +1273,8 @@ export function Timeline({
   onZoom,
 }: {
   project: PresentedProject | null
-  thumbnails: string[]
+  /** Generated frames per clip id, so each segment shows its own footage. */
+  clipFrames: Record<string, string[]>
   waveform: number[]
   currentTime: number
   zoom: number
@@ -1332,7 +1348,7 @@ export function Timeline({
                     width: `${duration > 0 ? ((segment.outputEndMs - segment.outputStartMs) / 1000 / duration) * 100 : 0}%`,
                   }}
                 >
-                  {thumbnails.map((thumbnail, index) => (
+                  {((clipFrames[segment.clipId] ?? [])).map((thumbnail, index) => (
                     <img key={index} src={thumbnail} alt="" />
                   ))}
                 </div>
@@ -1374,6 +1390,7 @@ export function ExportDialog({
   progress,
   error,
   downloadUrl,
+  captionsOn,
   onBegin,
   onClose,
 }: {
@@ -1381,6 +1398,7 @@ export function ExportDialog({
   progress: number
   error: string | null
   downloadUrl: string | null
+  captionsOn: boolean
   onBegin: () => void
   onClose: () => void
 }) {
@@ -1409,21 +1427,12 @@ export function ExportDialog({
               <Icon name="upload" />
             </span>
             <h2 id="export-title">Export your video</h2>
-            <p>Export your edited video as an MP4.</p>
-            <label>
-              Format
-              <select>
-                <option>MP4 · H.264</option>
-                <option>WebM</option>
-              </select>
-            </label>
-            <label>
-              Quality
-              <select>
-                <option>1080p · Recommended</option>
-                <option>720p</option>
-              </select>
-            </label>
+            <p>
+              Export your edited video as an MP4.
+              {captionsOn
+                ? " Captions are burned in."
+                : " Captions are off, so none are burned in."}
+            </p>
             <button className="primary full" onClick={onBegin}>
               Export MP4
             </button>
@@ -1571,7 +1580,6 @@ export function EditorShell() {
   const [playing, setPlaying] = useState(false)
   const [selectedSentenceId, setSelectedSentenceId] = useState<string | null>(null)
   const [proposalBusy, setProposalBusy] = useState(false)
-  const [safe, setSafe] = useState(true)
   const [guides, setGuides] = useState(false)
   const [zoom, setZoom] = useState(1)
   const [exportOpen, setExportOpen] = useState(false)
@@ -1585,7 +1593,7 @@ export function EditorShell() {
   const [voiceDetail, setVoiceDetail] = useState<string | null>(null)
   const [voiceLevel, setVoiceLevel] = useState(0)
   const [voiceLines, setVoiceLines] = useState<Array<{ who: "user" | "agent"; text: string }>>([])
-  const [thumbnails, setThumbnails] = useState<string[]>([])
+  const [clipFrames, setClipFrames] = useState<Record<string, string[]>>({})
   const [activeClipId, setActiveClipId] = useState<string | null>(null)
   const [waveform, setWaveform] = useState<number[]>([])
 
@@ -1683,10 +1691,12 @@ export function EditorShell() {
     ? `/api/projects/${project!.id}/media?clip=${encodeURIComponent(activeClip.id)}&v=${encodeURIComponent(project!.updatedAt)}`
     : null
   const musicSrc = project?.music ? "/api/projects/" + project.id + "/music?v=" + encodeURIComponent(project.updatedAt) : null
+  // Flat view of every clip's frames, for the strips that span the whole timeline.
+  const allFrames = useMemo(() => Object.values(clipFrames).flat(), [clipFrames])
 
   useEffect(() => {
     if (!project) {
-      setThumbnails([])
+      setClipFrames({})
       setWaveform([])
       return
     }
@@ -1702,7 +1712,9 @@ export function EditorShell() {
       }),
     ).then((parts) => {
       if (!alive) return
-      setThumbnails(parts.flatMap((part) => part.frames))
+      // Frames stay keyed by clip so the media bin and each timeline segment can
+      // show their own footage instead of every clip's frames everywhere.
+      setClipFrames(Object.fromEntries(parts.map((part) => [part.clip.id, part.frames])))
       // Each clip reports a fixed 120 peaks, so repeat it by its time share.
       setWaveform(
         parts.flatMap((part) => {
@@ -2027,7 +2039,9 @@ export function EditorShell() {
 
   const proposeSentence = useCallback(async (id: string) => {
     setProposalBusy(true)
-    await runTool("propose_cut", { action: "remove", use: "sentence_id", sentence_id: id, apply: false })
+    // "sentence", not "sentence_id": the resolver matches on the former and
+    // silently falls back to the playhead for anything it does not recognise.
+    await runTool("propose_cut", { action: "remove", use: "sentence", sentence_id: id })
     setProposalBusy(false)
   }, [runTool])
 
@@ -2141,10 +2155,13 @@ export function EditorShell() {
 
   const captionsOn = project?.edit.captions.enabled ?? false
   const captionPositionY = project?.edit.captions.positionY ?? 0.86
+  // "bold" is not offered as its own button: the server always turns
+  // word-highlight on for it, so a separate Bold button could never light up.
   const captionStyle: CaptionStyle =
-    project?.edit.captions.preset === "bold"
-      ? project.edit.captions.wordHighlight ? "highlight" : "bold"
-      : "clean"
+    project?.edit.captions.wordHighlight ? "highlight" : "clean"
+  const wordHighlight = project?.edit.captions.wordHighlight ?? false
+  /** Hex value, for painting the spoken word in the preview. */
+  const highlightHex = project?.edit.captions.highlightColor ?? "#FFD84D"
   const captionSize = Math.round((project?.edit.captions.fontScale ?? 1) * 32)
   const captionPosition =
     project?.edit.captions.position === "top"
@@ -2173,14 +2190,13 @@ export function EditorShell() {
         style={captionStyle}
         size={captionSize}
         position={captionPosition}
-        safe={safe}
         enabled={captionsOn}
         textColor={textColor}
         highlightColor={highlightColor}
         onEnabled={(value) => void runTool("set_caption_style", { enabled: value })}
         onStyle={(value) =>
           void runTool("set_caption_style", {
-            preset: value === "highlight" ? "bold" : value,
+            preset: value === "highlight" ? "bold" : "clean",
             word_highlight: value === "highlight",
           })
         }
@@ -2190,7 +2206,6 @@ export function EditorShell() {
             position: value === "Middle" ? "center" : value.toLowerCase(),
           })
         }
-        onSafe={setSafe}
         onTextColor={(value) => void runTool("set_caption_style", { color: TEXT_COLORS[value] })}
         onHighlightColor={(value) =>
           void runTool("set_caption_style", { word_highlight: true, highlight_color: HIGHLIGHT_COLORS[value] })
@@ -2222,6 +2237,7 @@ export function EditorShell() {
         project={project}
         phase={phase}
         activeClipId={activeClip?.id ?? null}
+        clipFrames={clipFrames}
         onSelectClip={selectClip}
         onRemoveClip={(clipId) => void removeClip(clipId)}
         onUpload={uploadFiles}
@@ -2248,7 +2264,7 @@ export function EditorShell() {
         selectedSentenceId={selectedSentenceId}
         currentTime={currentTime}
         duration={duration}
-        thumbnails={thumbnails}
+        thumbnails={allFrames}
         waveform={waveform}
         proposalState={proposalBusy ? "applying" : "pending"}
         proposal={pendingProposal}
@@ -2292,6 +2308,8 @@ export function EditorShell() {
             captionSize={captionSize}
             captionPosition={captionPosition}
             captionPositionY={captionPositionY}
+            wordHighlight={wordHighlight}
+            highlightColor={highlightHex}
             showGuides={guides}
             mode={previewMode}
             mediaSrc={mediaSrc}
@@ -2341,7 +2359,7 @@ export function EditorShell() {
       </div>
       <Timeline
         project={project}
-        thumbnails={thumbnails}
+        clipFrames={clipFrames}
         waveform={waveform}
         currentTime={currentTime}
         zoom={zoom}
@@ -2361,6 +2379,7 @@ export function EditorShell() {
           progress={project?.jobs.export.progress ?? 0}
           error={exportError || project?.jobs.export.error || null}
           downloadUrl={downloadUrl}
+          captionsOn={captionsOn}
           onBegin={beginExport}
           onClose={() => setExportOpen(false)}
         />

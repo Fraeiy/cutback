@@ -119,6 +119,17 @@ function publicContext(project: Project): Record<string, unknown> {
     playback: project.playback,
     last_target: project.lastTarget,
     highlight: project.highlight,
+    // The sequence of clips, so the model can talk about "the second clip" and
+    // tell which sentences came from which source.
+    clips: (project.clips ?? []).map((clip, index) => ({
+      clip_id: clip.id,
+      ordinal: index + 1,
+      filename: clip.media.filename,
+      start_ms: clip.offsetMs,
+      end_ms: clip.offsetMs + clip.media.durationMs,
+      duration_ms: clip.media.durationMs,
+      transcribed: Boolean(clip.transcript),
+    })),
     sentences: (project.transcript?.sentences ?? []).map((sentence, index) => ({
       id: sentence.id,
       ordinal: index + 1,

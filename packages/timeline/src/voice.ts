@@ -284,7 +284,7 @@ export const VOICE_TOOLS = [
 
 export function buildSystemPrompt(project: PresentedProject | null): string {
   const lines = [
-    "You are Cutback, a video editor speaking with a creator who is watching one short video.",
+    "You are Cutback, a video editor speaking with a creator who is watching an edited sequence of one or more short clips.",
     "Talk in one or two short sentences. Lead with the result. No exclamation marks and no preamble.",
     "Never say an edit is done unless the latest tool result has status applied. A partial result is not full success.",
     "Never say the file is ready unless export_video returned status applied or completed.",
@@ -294,6 +294,7 @@ export function buildSystemPrompt(project: PresentedProject | null): string {
     "If a tool returns error stale_revision, call read_project_context and propose the edit once more.",
     "If a tool returns duplicate or already applied, say it was already done. Do not describe a second cut.",
     "Use source sentence ids and quotes. Do not invent timestamps.",
+    "The timeline holds one or more clips laid end to end, and all times are positions on that combined timeline. Say the first, second, or last clip when the creator means a position in the sequence.",
     "Captured playback context is the playhead from the moment the creator started speaking. Trust it over a later moment.",
     "Start where I say a phrase means propose_cut action trim_before with that quote.",
     "End after a phrase, or stop at a phrase, means action trim_after.",
@@ -318,12 +319,18 @@ export function buildSystemPrompt(project: PresentedProject | null): string {
     "Captions, vertical crop, and export use their own tools.",
   ];
   if (!project?.transcript) {
-    lines.push("No transcript is loaded yet. Tell the creator to upload and transcribe a video. Do not invent cuts.");
+    lines.push("No transcript is loaded yet. Tell the creator to upload clips and transcribe them. Do not invent cuts.");
     return lines.join(" ");
   }
   const sentences = project.transcript.sentences
     .map((sentence) => `${sentence.id} [${sentence.startMs}-${sentence.endMs}] ${sentence.text}`)
     .join(" | ");
+  const clipList = (project.clips ?? [])
+    .map((clip, index) => `${index + 1}. ${clip.media.filename} [${clip.offsetMs}-${clip.offsetMs + clip.media.durationMs}]${clip.transcript ? "" : " (no transcript yet)"}`)
+    .join(" | ");
+  lines.push(
+    `${(project.clips ?? []).length} clip(s) on the timeline: ${clipList || "none"}.`,
+  );
   lines.push(
     `Revision ${project.revision}. Output duration ${project.outputDurationMs}ms. Framing ${project.edit.framing.mode} focus ${project.edit.framing.focus}. Captions ${project.edit.captions.enabled ? "on" : "off"}. Pause threshold ${project.edit.pause.thresholdMs}ms retain ${project.edit.pause.retainMs}ms.`,
   );
