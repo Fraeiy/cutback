@@ -382,6 +382,8 @@ export function VideoPreview({
   onMode,
   onVideoReady,
   onVideoTimeUpdate,
+  onPlaybackBlocked,
+  onAttachReady,
   mediaSrc,
   activeClipId,
 }: {
@@ -406,6 +408,8 @@ export function VideoPreview({
   onMode: (mode: "original" | "edited") => void
   onVideoReady: (video: HTMLVideoElement | null) => void
   onVideoTimeUpdate: (video: HTMLVideoElement) => void
+  onPlaybackBlocked: () => void
+  onAttachReady: () => void
   mediaSrc?: string | null
   activeClipId: string | null
 }) {
@@ -444,17 +448,27 @@ export function VideoPreview({
     }
   }, [])
 
+  // Hand the element up through a stable ref callback. An effect keyed on
+  // onVideoReady ran once on mount, when the clip had not loaded yet and the
+  // markup was still an <img>, so the editor's ref stayed null for the whole
+  // session and seek() bailed out every time.
+  const attachVideo = useCallback((element: HTMLVideoElement | null) => {
+    videoRef.current = element
+    onVideoReady(element)
+  }, [onVideoReady])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+    video.muted = muted
+  }, [mediaSrc, muted, onAttachReady])
+
   useEffect(() => {
     const video = videoRef.current
     if (!video || !mediaSrc) return
-    video.muted = muted
-    if (playing) void video.play().catch(() => undefined)
+    if (playing) void video.play().catch(() => onPlaybackBlocked())
     else video.pause()
-  }, [mediaSrc, muted, playing])
-  useEffect(() => {
-    onVideoReady(videoRef.current)
-    return () => onVideoReady(null)
-  }, [onVideoReady])
+  }, [mediaSrc, playing, onPlaybackBlocked])
   const activeCue = project?.cues.find(
     (cue) => currentTime * 1000 >= cue.outputStartMs && currentTime * 1000 <= cue.outputEndMs,
   )
@@ -508,11 +522,14 @@ export function VideoPreview({
         >
           {mediaSrc ? (
             <video
-              ref={videoRef}
+              ref={attachVideo}
               src={mediaSrc}
               muted={muted}
               playsInline
+              preload="auto"
               onTimeUpdate={(event) => onVideoTimeUpdate(event.currentTarget)}
+              onLoadedMetadata={onAttachReady}
+              onCanPlay={onAttachReady}
               style={{
                 objectFit: framing?.mode && framing.mode !== "original" ? "cover" : "contain",
                 objectPosition: `${(framing?.focus ?? 0.5) * 100}% ${(framing?.focusY ?? 0.5) * 100}%`,
@@ -2349,9 +2366,34 @@ export function EditorShell() {
             onVideoTimeUpdate={handleVideoTimeUpdate}
             onPlay={() => {
               if (!activeClip) return
-              setPlaying((value) => !value)
+              const video = videoRef.current
+              if (!video) return
+              // Called straight from the click, so the browser sees a user
+              // gesture. Playing from an effect instead is what Chrome blocks
+              // for unmuted video, and the rejection was being swallowed.
+              if (video.paused) {
+                setPlaying(true)
+                void video.play().catch(() => {
+                  setPlaying(false)
+                  setStatus("Playback was blocked. Press play again.", false)
+                })
+              } else {
+                video.pause()
+                setPlaying(false)
+              }
             }}
             onSeek={seek}
+            onPlaybackBlocked={() => {
+              setPlaying(false)
+              setStatus("Playback was blocked. Press play again.", false)
+            }}
+            onAttachReady={() => {
+              const video = videoRef.current
+              if (!video || !pendingSeekRef.current) return
+              const target = pendingSeekRef.current
+              pendingSeekRef.current = null
+              video.currentTime = target / 1000
+            }}
             onRatio={(value) => void runTool("set_aspect_ratio", { mode: modeFromRatio(value) })}
             onMode={(value) => {
               setPreviewMode(value)
