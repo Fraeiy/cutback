@@ -26,10 +26,33 @@ export interface ExportPlanInput {
   /** Normalise every clip to the first clip's geometry before concat. */
   normalize?: boolean;
   frameRate?: number;
+  /** Container and codecs. Omitted exports stay MP4 so older callers are unchanged. */
+  format?: "mp4" | "webm";
+  /** Caps the short side. Smaller sources are not enlarged. */
+  quality?: 1080 | 720;
 }
 
 function ms(value: number): string {
   return (value / 1000).toFixed(3);
+}
+
+export type ExportFormat = "mp4" | "webm";
+export type ExportQuality = 1080 | 720;
+
+/** Read the export dialog, or a voice tool call, into the two settings the renderer understands. */
+export function readExportOptions(args: Record<string, unknown> | undefined): { format: ExportFormat; quality: ExportQuality } {
+  const format = args?.format === "webm" ? "webm" : "mp4";
+  const raw = typeof args?.quality === "number" ? String(args.quality) : String(args?.quality ?? "1080");
+  return { format, quality: raw.startsWith("720") ? 720 : 1080 };
+}
+
+/** Fit a frame to 1080p or 720p by its short side, keeping the shape and never enlarging. */
+export function fitExportSize(width: number, height: number, quality: ExportQuality): { width: number; height: number } {
+  const short = Math.min(width, height);
+  if (short <= 0) return { width: 2, height: 2 };
+  const scale = Math.min(1, quality / short);
+  const even = (value: number) => Math.max(2, Math.round((value * scale) / 2) * 2);
+  return { width: even(width), height: even(height) };
 }
 
 /** Escape a filesystem path for an FFmpeg filtergraph option. */
@@ -198,6 +221,20 @@ export function buildFilterGraph(input: ExportPlanInput): string {
       ? `subtitles='${escapeFilterPath(input.srtPath)}'${fonts}`
       : `subtitles='${escapeFilterPath(input.srtPath)}'${fonts}:force_style='${style.replace(/,/g, "\\,")}'`);
   }
+  // Scale after captions so the burned text stays in the same place on the picture.
+  if (input.quality) {
+    const base = input.crop
+      ? { width: input.crop.outWidth, height: input.crop.outHeight }
+      : input.clips[0]
+        ? { width: input.clips[0].width, height: input.clips[0].height }
+        : null;
+    if (base) {
+      const fitted = fitExportSize(base.width, base.height, input.quality);
+      if (fitted.width !== base.width || fitted.height !== base.height) {
+        tails.push(`scale=${fitted.width}:${fitted.height}:flags=lanczos`, "setsar=1");
+      }
+    }
+  }
   // With nothing to apply after the concat, a null filter still gives [vout] a
   // label to bind to.
   chains.push(tails.length > 0 ? `${video}${tails.join(",")}[vout]` : `${video}null[vout]`);
@@ -231,22 +268,15 @@ export function buildExportArgs(input: ExportPlanInput): string[] {
     "-map",
     "[vout]",
   ];
-  if (input.hasAudio) args.push("-map", "[aout]", "-c:a", "aac", "-b:a", "160k");
-  args.push(
-    "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-crf",
-    "20",
-    "-pix_fmt",
-    "yuv420p",
-    "-movflags",
-    "+faststart",
-    "-progress",
-    "pipe:1",
-    "-nostats",
-    input.output,
-  );
+  const webm = input.format === "webm";
+  if (input.hasAudio) {
+    args.push("-map", "[aout]", "-c:a", webm ? "libopus" : "aac", "-b:a", webm ? "128k" : "160k");
+  }
+  if (webm) {
+    args.push("-c:v", "libvpx-vp9", "-deadline", "good", "-cpu-used", "6", "-row-mt", "1", "-crf", "33", "-b:v", "0", "-pix_fmt", "yuv420p");
+  } else {
+    args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart");
+  }
+  args.push("-progress", "pipe:1", "-nostats", input.output);
   return args;
 }

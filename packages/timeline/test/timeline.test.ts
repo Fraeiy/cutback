@@ -7,6 +7,8 @@ import {
   buildExportArgs,
   buildSrt,
   coverCrop,
+  fitExportSize,
+  readExportOptions,
   createProject,
   escapeFilterPath,
   mapSourceRange,
@@ -330,6 +332,34 @@ test("export arguments are an array and share the resolved segments", () => {
   assert.match(srt, /-->/);
   assert.equal(srt.includes("yesterday"), false);
   assert.equal(srt.includes("intro"), true);
+});
+
+test("export quality fits the short side and webm selects vp9", () => {
+  assert.deepEqual(fitExportSize(1920, 1080, 720), { width: 1280, height: 720 });
+  assert.deepEqual(fitExportSize(1080, 1920, 1080), { width: 1080, height: 1920 });
+  assert.deepEqual(fitExportSize(640, 360, 1080), { width: 640, height: 360 });
+  assert.deepEqual(readExportOptions({ format: "webm", quality: "720p" }), { format: "webm", quality: 720 });
+  assert.deepEqual(readExportOptions({}), { format: "mp4", quality: 1080 });
+  const project = sample();
+  const view = present(project);
+  const args = buildExportArgs({
+    clips: [{ clipId: "clip_1", path: "clip.mp4", hasAudio: true, width: 1920, height: 1080 }],
+    output: "out.webm",
+    segments: view.segments,
+    hasAudio: true,
+    crop: null,
+    captions: { ...project.edit.captions, enabled: false },
+    srtPath: null,
+    fontsDir: null,
+    fontName: null,
+    format: "webm",
+    quality: 720,
+  });
+  assert.equal(args.includes("libvpx-vp9"), true);
+  assert.equal(args.includes("libopus"), true);
+  assert.equal(args.includes("libx264"), false);
+  const filter = args[args.indexOf("-filter_complex") + 1];
+  assert.equal(filter.includes("scale=1280:720"), true);
 });
 
 test("a batch runs steps in order, reports a later failure, and does not retry finished steps", () => {

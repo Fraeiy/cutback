@@ -1,17 +1,23 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   buildExportArgs,
   buildAss,
   buildSrt,
   present,
+  type ExportFormat,
+  type ExportQuality,
   type Project,
 } from "../../../packages/timeline/src/index.js";
 import { materializeProjectFile } from "./cloud.js";
 import { ffmpegBin, findFont, parseProgress, runProcess } from "./ffmpeg.js";
 import { projectDir } from "./store.js";
 
-export async function renderExport(project: Project, onProgress: (progress: number) => Promise<void>): Promise<number> {
+export async function renderExport(
+  project: Project,
+  onProgress: (progress: number) => Promise<void>,
+  options: { format?: ExportFormat; quality?: ExportQuality } = {},
+): Promise<number> {
   const clips = project.clips ?? [];
   if (clips.length === 0) throw new Error("Upload a video first.");
   const view = present(project);
@@ -29,7 +35,10 @@ export async function renderExport(project: Project, onProgress: (progress: numb
   );
   // Only the clips actually used by the timeline need to be fed to ffmpeg, but
   // segment clip ids index into this list so it must cover every clip present.
-  const output = path.join(dir, "export.mp4");
+  const format: ExportFormat = options.format === "webm" ? "webm" : "mp4";
+  const quality: ExportQuality = options.quality === 720 ? 720 : 1080;
+  await Promise.all(["export.mp4", "export.webm"].map((name) => rm(path.join(dir, name), { force: true })));
+  const output = path.join(dir, `export.${format}`);
   let subtitlePath: string | null = null;
   const font = findFont(project.edit.captions.fontFamily);
   await writeFile(path.join(dir, "captions.srt"), buildSrt(view.cues), "utf8");
@@ -57,6 +66,8 @@ export async function renderExport(project: Project, onProgress: (progress: numb
     audio: project.edit.audio,
     // Mixed sources must be levelled before concat; a lone clip needs no change.
     normalize: exportClips.length > 1,
+    format,
+    quality,
   });
   let buffer = "";
   let lastWrite = 0;

@@ -2,7 +2,9 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import type { PresentedProject, Proposal, ResolvedSegment } from "@cutback/timeline"
 import { api, saveToken, type Health } from "./api"
 import { VoiceSession, type VoicePhase } from "./voice"
+import { Brand } from "./editor/Brand"
 import { FloatingAssistant } from "./editor/FloatingAssistant"
+import { Opening } from "./editor/Opening"
 import {
   PROJECT_MEDIA as mediaImage,
   TOOL_LABELS as toolLabels,
@@ -118,6 +120,12 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
         <rect x="8" y="8" width="8" height="8" rx="1" />
       </>
     ),
+    film: (
+      <>
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <path d="M7 4v16M17 4v16M3 9h4M17 9h4M3 15h4M17 15h4" />
+      </>
+    ),
     more: (
       <>
         <circle cx="5" cy="12" r="1" fill="currentColor" />
@@ -178,8 +186,13 @@ const TIMELINE_KEY = "cutback.timelineHeight.v1"
 /** Bars across the whole timeline. Wide enough to read, few enough to stay crisp. */
 const WAVEFORM_BARS = 160
 
+/** Leave the preview a watchable band. A stored height from a tall monitor
+ *  must not pin the timeline so high that a short window shrinks the picture. */
 function clampTimelineHeight(value: number): number {
-  return Math.max(TIMELINE_MIN_H, Math.min(TIMELINE_MAX_H, Math.round(value)))
+  const available = typeof window === "undefined" ? TIMELINE_MAX_H : window.innerHeight - 52 - 300
+  const ceiling = Math.max(96, Math.min(TIMELINE_MAX_H, available))
+  const floor = Math.min(TIMELINE_MIN_H, ceiling)
+  return Math.max(floor, Math.min(ceiling, Math.round(value)))
 }
 
 function formatTime(value: number) {
@@ -199,18 +212,6 @@ function modeFromRatio(ratio: string): "original" | "wide" | "square" | "vertica
 function sourceToOutput(segments: ResolvedSegment[], sourceMs: number): number | null {
   const segment = segments.find((item) => sourceMs >= item.sourceStartMs && sourceMs <= item.sourceEndMs)
   return segment ? segment.outputStartMs + sourceMs - segment.sourceStartMs : null
-}
-
-function Brand() {
-  return (
-    <div className="brand">
-      <span className="brand-mark">
-        <i />
-        <i />
-      </span>
-      <strong>cutback</strong>
-    </div>
-  )
 }
 
 export function EditorHeader({
@@ -258,15 +259,14 @@ export function EditorHeader({
           {saveStatus}
         </span>
       </div>
-      {/* Every status message used to live in the desktop-only header, so a
-          phone showed no feedback at all for uploads, transcription failures or
-          export errors. This is the mobile equivalent. */}
-      <div className="mobile-only mobile-status" role="status" aria-live="polite">
-        {saveStatus}
-      </div>
       <div className="mobile-only mobile-head">
         <Brand />
-        <b className="mobile-project">{title}</b>
+        <span className="mobile-project">
+          <b>{title}</b>
+          {saveStatus !== "Saved" && saveStatus !== "Loading…" && (
+            <small role="status" aria-live="polite">{saveStatus}</small>
+          )}
+        </span>
       </div>
       <div className="header-actions">
         <button
@@ -347,6 +347,7 @@ export function PlaybackControls({
       <button
         className="play-button"
         onClick={onPlay}
+        disabled={duration <= 0}
         aria-label={playing ? "Pause" : "Play"}
       >
         <Icon name={playing ? "pause" : "play"} size={22} />
@@ -406,6 +407,9 @@ export function VideoPreview({
   onAttachReady,
   mediaSrc,
   activeClipId,
+  onUploadFiles,
+  uploadBusy,
+  voice,
 }: {
   project: PresentedProject | null
   currentTime: number
@@ -431,36 +435,14 @@ export function VideoPreview({
   onAttachReady: () => void
   mediaSrc?: string | null
   activeClipId: string | null
+  onUploadFiles: (files: File[]) => void
+  uploadBusy: boolean
+  voice?: React.ReactNode
 }) {
   const stageRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const [muted, setMuted] = useState(false)
-
-  useEffect(() => {
-    const frame = stageRef.current
-    if (!frame) return
-    const MAX = 4.5
-    const onMove = (event: PointerEvent) => {
-      const rect = frame.getBoundingClientRect()
-      if (rect.width === 0 || rect.height === 0) return
-      const px = (event.clientX - rect.left) / rect.width - 0.5
-      const py = (event.clientY - rect.top) / rect.height - 0.5
-      frame.style.setProperty("--tilt-x", `${(-py * MAX).toFixed(2)}deg`)
-      frame.style.setProperty("--tilt-y", `${(px * MAX).toFixed(2)}deg`)
-      frame.style.setProperty("--gloss-x", `${((px + 0.5) * 100).toFixed(1)}%`)
-      frame.style.setProperty("--gloss-y", `${((py + 0.5) * 100).toFixed(1)}%`)
-    }
-    const onLeave = () => {
-      frame.style.setProperty("--tilt-x", "0deg")
-      frame.style.setProperty("--tilt-y", "0deg")
-    }
-    frame.addEventListener("pointermove", onMove)
-    frame.addEventListener("pointerleave", onLeave)
-    return () => {
-      frame.removeEventListener("pointermove", onMove)
-      frame.removeEventListener("pointerleave", onLeave)
-    }
-  }, [])
+  const [dropping, setDropping] = useState(false)
 
   // Hand the element up through a stable ref callback. An effect keyed on
   // onVideoReady ran once on mount, when the clip had not loaded yet and the
@@ -494,7 +476,27 @@ export function VideoPreview({
     ? (loadedClip ? loadedClip.media.width / loadedClip.media.height : 16 / 9)
     : framing.mode === "wide" ? 16 / 9 : framing.mode === "square" ? 1 : 9 / 16
   return (
-    <section className="preview-panel">
+    <section
+      className={`preview-panel ${dropping ? "is-dropping" : ""}`}
+      onDragEnter={(event) => {
+        event.preventDefault()
+        setDropping(true)
+      }}
+      onDragOver={(event) => {
+        event.preventDefault()
+        event.dataTransfer.dropEffect = "copy"
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node)) return
+        setDropping(false)
+      }}
+      onDrop={(event) => {
+        event.preventDefault()
+        setDropping(false)
+        const files = Array.from(event.dataTransfer.files ?? [])
+        if (files.length) onUploadFiles(files)
+      }}
+    >
       <div className="preview-toolbar desktop-only">
         <span>Preview</span>
         <div className="toolbar-right">
@@ -519,13 +521,16 @@ export function VideoPreview({
           reads it here, and custom properties only inherit downward, so putting
           it on the frame below left the stage with an invalid width and height
           and the preview collapsed. */}
-      <div className="video-stage" style={{ "--canvas-ratio": canvasRatio } as React.CSSProperties}>
+      <div
+        className="video-stage"
+        ref={stageRef}
+        style={{ "--canvas-ratio": canvasRatio } as React.CSSProperties}
+      >
         {/* The frame is sized to the clip's own aspect ratio so the video fills
             it exactly. Overlays are positioned inside the frame, which keeps
             captions and guides on the picture rather than in the letterbox. */}
         <div
           style={{ "--caption-y": captionPositionY } as React.CSSProperties}
-          ref={stageRef}
           className={`video-frame ratio-${ratio.replace(":", "-").toLowerCase()}`}
         >
           {mediaSrc ? (
@@ -545,10 +550,9 @@ export function VideoPreview({
               aria-label="Uploaded video preview"
             />
           ) : (
-            <img
-              src={mediaImage}
-              alt="Creator recording a video in a home studio"
-            />
+            <div className="stage-empty">
+              <h2>{uploadBusy ? "Adding your clip…" : "Preparing the preview"}</h2>
+            </div>
           )}
           {showGuides && <div className="safe-guides" />}
           {mode === "edited" && project?.edit.captions.enabled && activeCue && (
@@ -583,6 +587,7 @@ export function VideoPreview({
         </div>
       </div>
       </div>
+      {voice}
       <PlaybackControls
         currentTime={currentTime}
         duration={((mode === "original" ? project?.sourceDurationMs : project?.outputDurationMs) ?? 0) / 1000}
@@ -591,7 +596,12 @@ export function VideoPreview({
         onPlay={onPlay}
         onSeek={onSeek}
         onMute={() => setMuted((value) => !value)}
-        onFullscreen={() => stageRef.current?.requestFullscreen?.()}
+        onFullscreen={() => {
+          const node = stageRef.current
+          if (!node) return
+          if (document.fullscreenElement) void document.exitFullscreen()
+          else void node.requestFullscreen?.()
+        }}
       />
     </section>
   )
@@ -637,7 +647,7 @@ export function EditProposal({
           <button className="primary" onClick={onApply}>
             Apply
           </button>
-          <button className="dismiss desktop-only" onClick={onDismiss}>
+          <button className="dismiss" onClick={onDismiss}>
             Dismiss
           </button>
         </div>
@@ -688,7 +698,7 @@ function MobileTimeline({
         />
       </div>
       <div className="mini-waveform">
-        {(waveform.length ? waveform.slice(0, 54) : Array.from({ length: 54 }, () => 0.18)).map((peak, index) => (
+        {duration > 0 && (waveform.length ? waveform.slice(0, 54) : []).map((peak, index) => (
           <i
             key={index}
             style={{ height: `${Math.max(12, peak * 100)}%` }}
@@ -786,16 +796,23 @@ export function TranscriptPanel({
       )}
       <MobileTimeline currentTime={currentTime} duration={duration} thumbnails={thumbnails} waveform={waveform} onSeek={onSeek} />
       <div className="mobile-only transcript-undo">
-        <button onClick={onUndo}>
+        <button onClick={onUndo} disabled={!project?.undo.length}>
           <Icon name="undo" />
           Undo
         </button>
-        <button onClick={onRedo}>
+        <button onClick={onRedo} disabled={!project?.redo.length}>
           <Icon name="redo" />
           Redo
         </button>
       </div>
       <div className="transcript-list">
+        {visibleSentences.length === 0 && (
+          <p className="inspector-empty">
+            {query
+              ? "No lines match that search."
+              : "The transcript shows up here once a clip is transcribed."}
+          </p>
+        )}
         {visibleSentences.map((sentence) => (
           <button
             key={sentence.id}
@@ -811,13 +828,15 @@ export function TranscriptPanel({
           </button>
         ))}
       </div>
-      <button
-        className="selection-action"
-        disabled={!selectedSentenceId}
-        onClick={() => selectedSentenceId && onPropose(selectedSentenceId)}
-      >
-        <Icon name="scissors" size={16} /> Propose removing selected sentence
-      </button>
+      {sentences.length > 0 && (
+        <button
+          className="selection-action"
+          disabled={!selectedSentenceId}
+          onClick={() => selectedSentenceId && onPropose(selectedSentenceId)}
+        >
+          <Icon name="scissors" size={16} /> Remove selected line
+        </button>
+      )}
       <EditProposal
         proposal={proposal}
         state={proposalState}
@@ -1096,7 +1115,6 @@ function MediaPanel({
   onSelectClip,
   onRemoveClip,
   onTranscribe,
-  onLoadDemo,
   onUpload,
 }: {
   project: PresentedProject | null
@@ -1106,7 +1124,6 @@ function MediaPanel({
   onSelectClip: (clipId: string) => void
   onRemoveClip: (clipId: string) => void
   onTranscribe: (clipId: string) => void
-  onLoadDemo: () => void
   onUpload: (files: File[]) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -1165,36 +1182,13 @@ function MediaPanel({
           })}
         </div>
       ) : (
-        <div className="empty-card">
-          <span className="round-icon">
-            <Icon name="upload" />
-          </span>
-          <b>
-            {phase === "empty"
-              ? "Add your first clip"
-              : phase === "uploading"
-                ? "Uploading clip…"
-                : "Creating transcript…"}
-          </b>
-          <p>
-            {phase === "empty"
-              ? "Choose one or more videos to begin editing."
-              : "Preparing transcript"}
-          </p>
-        </div>
-      )}
-      {/* The demo fixture ships with a prepared transcript, so it is the only
-          way to try the voice tools without paying for a transcription first.
-          The endpoint existed but nothing could reach it. */}
-      {clips.length === 0 && (
-        <button
-          className="ghost full demo-load"
-          disabled={busy}
-          onClick={onLoadDemo}
-        >
-          <Icon name="play" size={15} />
-          Load the demo project
-        </button>
+        <p className="inspector-empty">
+          {phase === "uploading"
+            ? "Uploading clip…"
+            : phase === "transcribing"
+              ? "Creating the transcript…"
+              : "Drop a video on the preview, or choose a file here."}
+        </p>
       )}
       <input
         ref={inputRef}
@@ -1347,6 +1341,7 @@ export function Timeline({
   zoom,
   height,
   captionsOn,
+  activeClipId,
   onSeek,
   onZoom,
   onResizeStart,
@@ -1361,6 +1356,7 @@ export function Timeline({
   /** Current timeline height in px, mirrored onto the separator for AT. */
   height: number
   captionsOn: boolean
+  activeClipId: string | null
   onSeek: (time: number) => void
   onZoom: (zoom: number) => void
   onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void
@@ -1415,15 +1411,17 @@ export function Timeline({
           {/* The timestamp lives in its own strip above the ruler, so it can
               never land on a tick label. */}
           <div className="timeline-headstrip">
-            <div
-              className="playhead-label"
-              style={{ left: `clamp(calc(var(--gutter) + 22px), calc(var(--gutter) + (100% - var(--gutter)) * ${fraction}), calc(100% - 22px))` }}
-            >
-              {formatTime(currentTime)}
-            </div>
+            {currentTime >= 0.5 && (
+              <div
+                className="playhead-label"
+                style={{ left: `clamp(calc(var(--gutter) + 22px), calc(var(--gutter) + (100% - var(--gutter)) * ${fraction}), calc(100% - 22px))` }}
+              >
+                {formatTime(currentTime)}
+              </div>
+            )}
           </div>
           <div className="ruler">
-            {ticks.map((tick) => (
+            {(duration > 0 ? ticks : [0]).map((tick) => (
               <span key={tick} style={{ left: `${tick * 100}%` }}>
                 {formatTime(duration * tick)}
               </span>
@@ -1443,13 +1441,13 @@ export function Timeline({
           />
           <div className="track video-track">
             <label>
-              <Icon name="document" size={17} />
+              <Icon name="film" size={17} />
               Video
             </label>
             <div className="clip-lane">
               {(project?.segments ?? []).map((segment) => (
                 <div
-                  className="clip selected"
+                  className={`clip ${segment.clipId === activeClipId ? "selected" : ""}`}
                   key={segment.id}
                   style={{
                     left: `${duration > 0 ? (segment.outputStartMs / 1000 / duration) * 100 : 0}%`,
@@ -1492,9 +1490,9 @@ export function Timeline({
               Audio
             </label>
             <div className="waveform">
-              {(waveform.length ? waveform : Array.from({ length: WAVEFORM_BARS }, () => 0.18)).map((peak, n) => (
+              {project && waveform.length ? waveform.map((peak, n) => (
                 <i key={n} style={{ height: `${Math.max(10, Math.min(100, peak * 100))}%` }} />
-              ))}
+              )) : <span className="track-off">{project ? "Reading audio…" : "No audio yet"}</span>}
             </div>
           </div>
         </div>
@@ -1503,11 +1501,14 @@ export function Timeline({
   )
 }
 
+export type ExportChoice = { format: "mp4" | "webm"; quality: "1080p" | "720p" }
+
 export function ExportDialog({
   state,
   progress,
   error,
   downloadUrl,
+  subtitlesUrl,
   captionsOn,
   onBegin,
   onClose,
@@ -1516,10 +1517,15 @@ export function ExportDialog({
   progress: number
   error: string | null
   downloadUrl: string | null
+  subtitlesUrl: string | null
   captionsOn: boolean
-  onBegin: () => void
+  onBegin: (choice: ExportChoice) => void
   onClose: () => void
 }) {
+  const [format, setFormat] = useState<ExportChoice["format"]>("mp4")
+  const [quality, setQuality] = useState<ExportChoice["quality"]>("1080p")
+  const choice = { format, quality }
+  const fileLabel = format === "webm" ? "WebM" : "MP4"
   const dialogRef = useRef<HTMLElement>(null)
   // Move focus into the dialog when it opens so keyboard users are not left
   // tabbing around the editor behind it.
@@ -1575,14 +1581,27 @@ export function ExportDialog({
               <Icon name="upload" />
             </span>
             <h2 id="export-title">Export your video</h2>
+            <label>
+              Format
+              <select aria-label="Export format" value={format} onChange={(event) => setFormat(event.target.value === "webm" ? "webm" : "mp4")}>
+                <option value="mp4">MP4</option>
+                <option value="webm">WebM</option>
+              </select>
+            </label>
+            <label>
+              Quality
+              <select aria-label="Export quality" value={quality} onChange={(event) => setQuality(event.target.value === "720p" ? "720p" : "1080p")}>
+                <option value="1080p">1080p</option>
+                <option value="720p">720p</option>
+              </select>
+            </label>
             <p>
-              Export your edited video as an MP4.
-              {captionsOn
-                ? " Captions are burned in."
-                : " Captions are off, so none are burned in."}
+              {quality === "1080p" ? "1080p keeps more detail." : "720p makes a smaller file."}
+              {format === "webm" ? " WebM takes longer to render." : ""}
+              {captionsOn ? " Captions are burned in." : " Captions are off, so none are burned in."}
             </p>
-            <button className="primary full" onClick={onBegin}>
-              Export MP4
+            <button className="primary full" onClick={() => onBegin(choice)}>
+              Export {fileLabel}
             </button>
           </>
         )}
@@ -1603,12 +1622,17 @@ export function ExportDialog({
               <Icon name="check" />
             </span>
             <h2 id="export-title">Export complete</h2>
-            <p>
-              Your edited MP4 is ready to download.
-            </p>
-            <a className="primary full" href={downloadUrl || "#"} download="cutback.mp4">
-              Download MP4
-            </a>
+            <p>Your edited {fileLabel} is ready, along with the subtitle file.</p>
+            <div className="export-downloads">
+              <a className="primary full" href={downloadUrl || "#"} download={`cutback.${format}`}>
+                Download {fileLabel}
+              </a>
+              {subtitlesUrl && (
+                <a className="secondary full" href={subtitlesUrl} download="cutback-captions.srt">
+                  Download subtitles
+                </a>
+              )}
+            </div>
           </div>
         )}
         {state === "error" && (
@@ -1618,7 +1642,7 @@ export function ExportDialog({
             </span>
             <h2 id="export-title">Export could not finish</h2>
             <p>{error || "Export failed. Your edits are safe."}</p>
-            <button className="primary full" onClick={onBegin}>
+            <button className="primary full" onClick={() => onBegin(choice)}>
               Retry export
             </button>
           </div>
@@ -1757,8 +1781,10 @@ export function EditorShell() {
   const [project, setProject] = useState<PresentedProject | null>(null)
   const [title, setTitle] = useState("Untitled project")
   const [statusTone, setStatusTone] = useState<"ok" | "busy" | "error">("ok")
-  const [saveStatus, setSaveStatus] = useState("Loading…")
-  const [activeTool, setActiveTool] = useState<Tool>("transcript")
+  const [saveStatus, setSaveStatus] = useState("Saved")
+  const [activeTool, setActiveTool] = useState<Tool>(() =>
+    localStorage.getItem(PROJECT_KEY) ? "transcript" : "media",
+  )
   const [mobileTab, setMobileTab] = useState<"edit" | "captions" | "audio">("edit")
   const [currentTime, setCurrentTime] = useState(0)
   const [playing, setPlaying] = useState(false)
@@ -1770,6 +1796,7 @@ export function EditorShell() {
   const [exportState, setExportState] = useState<ExportState>("options")
   const [exportError, setExportError] = useState<string | null>(null)
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null)
+  const [subtitlesUrl, setSubtitlesUrl] = useState<string | null>(null)
   const [moreOpen, setMoreOpen] = useState(false)
   const [previewMode, setPreviewMode] = useState<"original" | "edited">("edited")
   const [uploading, setUploading] = useState(false)
@@ -1782,6 +1809,9 @@ export function EditorShell() {
   const [waveform, setWaveform] = useState<number[]>([])
   const [needsToken, setNeedsToken] = useState(false)
   const [pushToTalk, setPushToTalk] = useState(false)
+  const [booted, setBooted] = useState(false)
+  const [inEditor, setInEditor] = useState(false)
+  const [gateError, setGateError] = useState<string | null>(null)
   // Remembered timeline height, so a chosen size survives a reload. Clamped on
   // read because a stored value can predate a window resize.
   const [timelineHeight, setTimelineHeight] = useState(() => {
@@ -1844,8 +1874,8 @@ export function EditorShell() {
   const resizeTimelineByKeyboard = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     const step = event.shiftKey ? 48 : 16
     let next: number | null = null
-    if (event.key === "ArrowUp") next = timelineHeight - step
-    else if (event.key === "ArrowDown") next = timelineHeight + step
+    if (event.key === "ArrowUp") next = timelineHeight + step
+    else if (event.key === "ArrowDown") next = timelineHeight - step
     else if (event.key === "PageUp") next = timelineHeight - 48
     else if (event.key === "PageDown") next = timelineHeight + 48
     else if (event.key === "Home") next = TIMELINE_MIN_H
@@ -1906,12 +1936,18 @@ export function EditorShell() {
         // The server tells us up front whether it is gated, so we can ask for
         // the token instead of failing every request with a bare 401.
         if (nextHealth.accessTokenRequired && !api.hasToken()) setNeedsToken(true)
-        if (restored) remember(restored)
-        else if (existing) localStorage.removeItem(PROJECT_KEY)
+        const usable = restored && restored.clips.length > 0 && restored.transcriptSource !== "demo-fixture"
+        if (usable && restored) {
+          remember(restored)
+          setInEditor(true)
+        } else if (existing) localStorage.removeItem(PROJECT_KEY)
         setSaveStatus("Saved")
+        setBooted(true)
       })
       .catch((error: Error) => {
-        if (alive) setStatus(error.message || "Backend unavailable", false)
+        if (!alive) return
+        setStatus(error.message || "Backend unavailable", false)
+        setBooted(true)
       })
     return () => {
       alive = false
@@ -2143,6 +2179,10 @@ export function EditorShell() {
     // Reattach the playback anchor to wherever we are jumping to.
     segmentRef.current = null
     const clips = current.clips ?? []
+    // The preview already shows the first clip when none has been chosen yet.
+    // Treating that as a clip switch waits for a metadata event that never
+    // comes, so play and seek both stall.
+    const loadedId = activeClipId ?? clips[0]?.id ?? null
     if (which === "original") {
       // "Before" is the unedited source, which is every clip end to end, so a
       // global source time still has to resolve to the clip holding it.
@@ -2151,12 +2191,13 @@ export function EditorShell() {
         ?? clips[clips.length - 1]
       if (!clip) return
       const localMs = Math.max(0, Math.min(clip.media.durationMs, sourceMs - clip.offsetMs))
-      if (clip.id !== activeClipId) {
+      if (clip.id !== loadedId) {
         pendingSeekRef.current = localMs
         setActiveClipId(clip.id)
         setCurrentTime(sourceMs / 1000)
         return
       }
+      if (clip.id !== activeClipId) setActiveClipId(clip.id)
       video.currentTime = localMs / 1000
       setCurrentTime(sourceMs / 1000)
       return
@@ -2171,7 +2212,7 @@ export function EditorShell() {
     if (!segment) return
     // The playhead may sit in a different clip than the one loaded. Switch first,
     // then apply the position once that clip's metadata arrives.
-    if (segment.clipId && segment.clipId !== activeClipId) {
+    if (segment.clipId && segment.clipId !== loadedId) {
       pendingSeekRef.current = segment.clipStartMs + Math.max(0, target - segment.outputStartMs)
       pendingPlayRef.current = playing
       segmentRef.current = segment.id
@@ -2179,6 +2220,7 @@ export function EditorShell() {
       setCurrentTime(target / 1000)
       return
     }
+    if (segment.clipId && segment.clipId !== activeClipId) setActiveClipId(segment.clipId)
     const localMs = segment.clipId
       ? segment.clipStartMs + Math.max(0, target - segment.outputStartMs)
       : segment.sourceStartMs + Math.max(0, target - segment.outputStartMs)
@@ -2227,9 +2269,11 @@ export function EditorShell() {
     const current = projectRef.current
     if (!current) return
     const localMs = video.currentTime * 1000
+    const loadedId = activeClipId ?? current.clips?.[0]?.id ?? null
+    if (loadedId && loadedId !== activeClipId) setActiveClipId(loadedId)
     if (previewMode === "original") {
       const clips = current.clips ?? []
-      const clip = clips.find((item) => item.id === activeClipId) ?? clips[0]
+      const clip = clips.find((item) => item.id === loadedId) ?? clips[0]
       if (!clip) return
       // Roll into the next clip when this one runs out during playback.
       if (!video.paused && localMs >= clip.media.durationMs - 40) {
@@ -2263,12 +2307,12 @@ export function EditorShell() {
     if (index < 0) {
       // No anchor, so reattach from where the element actually is.
       index = segments.findIndex(
-        (item) => (!item.clipId || item.clipId === activeClipId) &&
+        (item) => (!item.clipId || item.clipId === loadedId) &&
           localMs >= item.clipStartMs && localMs <= item.clipEndMs,
       )
       if (index < 0) {
         index = segments.findIndex(
-          (item) => (!item.clipId || item.clipId === activeClipId) && item.clipStartMs > localMs,
+          (item) => (!item.clipId || item.clipId === loadedId) && item.clipStartMs > localMs,
         )
       }
       if (index < 0) {
@@ -2283,7 +2327,7 @@ export function EditorShell() {
     const segment = segments[index]
     segmentRef.current = segment.id
 
-    if (segment.clipId && segment.clipId !== activeClipId) {
+    if (segment.clipId && segment.clipId !== loadedId) {
       // A different clip takes over: load it, land on the right frame, carry on.
       pendingSeekRef.current = segment.clipStartMs
       pendingPlayRef.current = !video.paused
@@ -2373,9 +2417,10 @@ export function EditorShell() {
   }, [postContext, remember, seek, setStatus])
 
   const upload = useCallback(async (files: File[]) => {
-    if (files.length === 0) return
+    if (files.length === 0) return false
     setUploading(true)
-    setStatus(files.length > 1 ? `Uploading ${files.length} clips…` : "Uploading…", false)
+    setGateError(null)
+    setStatus(files.length > 1 ? `Uploading ${files.length} clips…` : "Uploading…", false, "busy")
     voiceRef.current?.end()
     voiceRef.current = null
     setVoice("Disconnected")
@@ -2386,7 +2431,7 @@ export function EditorShell() {
       // Every selected file becomes a clip, appended in the order chosen.
       let latest = current
       for (const [index, file] of files.entries()) {
-        setStatus(files.length > 1 ? `Uploading clip ${index + 1} of ${files.length}…` : "Uploading…", false)
+        setStatus(files.length > 1 ? `Uploading clip ${index + 1} of ${files.length}…` : "Uploading…", false, "busy")
         latest = await api.upload(latest.id, file)
         remember(latest)
       }
@@ -2397,11 +2442,19 @@ export function EditorShell() {
       // background effect, so testing it here reported a missing key whenever
       // it had not resolved yet, and the upload had already succeeded by then.
       // The server returns a clear message when the key really is absent.
-      setStatus(files.length > 1 ? "Transcribing clips…" : "Transcribing…", false)
+      setStatus(files.length > 1 ? "Transcribing clips…" : "Transcribing…", false, "busy")
+      setActiveTool("transcript")
+      setMobileTab("edit")
       const transcribing = await api.transcribe(latest.id)
       remember(transcribing)
+      setInEditor(true)
+      setStatus("Saved")
+      return true
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Upload failed.", false)
+      const message = error instanceof Error ? error.message : "Upload failed."
+      setGateError(message)
+      setStatus(message, false, "error")
+      return false
     } finally {
       setUploading(false)
     }
@@ -2410,26 +2463,6 @@ export function EditorShell() {
   const uploadFiles = useCallback((files: File[]) => {
     void upload(files)
   }, [upload])
-
-  /**
-   * Transcription is the gateway to every edit, so a clip that has no words is
-   * stuck until someone asks for it again. This is the only way back once an
-   * upload or an earlier transcription did not finish.
-   */
-  const loadDemo = useCallback(async () => {
-    setStatus("Loading the demo…", false, "busy")
-    try {
-      const next = await api.demo()
-      remember(next)
-      setActiveClipId(next.clips[0]?.id ?? null)
-      setSelectedSentenceId(null)
-      setCurrentTime(0)
-      setPlaying(false)
-      setStatus("Demo loaded. Try: “remove the long pauses”.")
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Could not load the demo.", false, "error")
-    }
-  }, [remember, setStatus])
 
   const transcribe = useCallback(async (clipId?: string) => {
     const current = projectRef.current
@@ -2573,7 +2606,7 @@ export function EditorShell() {
     }
   }, [currentTime, remember, seek, selectedWordIds, setStatus, stopVoice])
 
-  const beginExport = useCallback(async () => {
+  const beginExport = useCallback(async (choice: ExportChoice) => {
     const current = projectRef.current
     if (!current || current.clips.length === 0) {
       setExportError("Upload a video before exporting.")
@@ -2582,15 +2615,23 @@ export function EditorShell() {
     }
     setExportError(null)
     setDownloadUrl(null)
+    setSubtitlesUrl(null)
     setExportState("processing")
     // The render is one long request, so it needs its own deadline. Without one
     // a dropped connection left the dialog spinning indefinitely.
     const controller = new AbortController()
     const timer = window.setTimeout(() => controller.abort(), 10 * 60 * 1000)
     try {
-      const response = await api.tool(current.id, "export_video", {}, crypto.randomUUID(), controller.signal)
+      const response = await api.tool(
+        current.id,
+        "export_video",
+        { format: choice.format, quality: choice.quality },
+        crypto.randomUUID(),
+        controller.signal,
+      )
       remember(response.project)
       setDownloadUrl("/api/projects/" + current.id + "/export")
+      setSubtitlesUrl("/api/projects/" + current.id + "/subtitles.srt")
       setExportState("complete")
     } catch (error) {
       const message = error instanceof Error && error.name === "AbortError"
@@ -2734,7 +2775,6 @@ export function EditorShell() {
         onSelectClip={selectClip}
         onRemoveClip={(clipId) => void removeClip(clipId)}
         onTranscribe={(clipId) => void transcribe(clipId)}
-        onLoadDemo={() => void loadDemo()}
         onUpload={uploadFiles}
       />
     )
@@ -2775,19 +2815,46 @@ export function EditorShell() {
     )
   }
 
+  const environmentNotice = health && (!health.ffmpeg || !health.assemblyai)
+    ? [
+        !health.assemblyai ? "Transcription and voice are unavailable: the server has no ASSEMBLYAI_API_KEY." : null,
+        !health.ffmpeg ? "Export is unavailable: ffmpeg was not found on the server." : null,
+      ].filter(Boolean).join(" ")
+    : null
+
+  if (!booted) {
+    return (
+      <main className="opening">
+        <header className="opening-bar"><Brand large /></header>
+      </main>
+    )
+  }
+
+  if (!inEditor) {
+    return (
+      <>
+        {environmentNotice && <div className="env-notice" role="status">{environmentNotice}</div>}
+        <Opening
+          busy={uploading}
+          status={saveStatus}
+          error={gateError}
+          onFiles={(files) => void upload(files)}
+        />
+        {needsToken && (
+          <AccessTokenGate
+            onSave={(value) => {
+              saveToken(value)
+              window.location.reload()
+            }}
+          />
+        )}
+      </>
+    )
+  }
+
   return (
     <main className="app-shell" style={{ "--timeline-h": `${timelineHeight}px` } as React.CSSProperties}>
-      {/* Surface a broken environment up front. Without ffmpeg an export fails
-          and without an API key transcription fails, and both used to surface
-          only as a failed request several steps into a demo. */}
-      {health && (!health.ffmpeg || !health.assemblyai) && (
-        <div className="env-notice" role="status">
-          {[
-            !health.assemblyai ? "Transcription and voice are unavailable: the server has no ASSEMBLYAI_API_KEY." : null,
-            !health.ffmpeg ? "Export is unavailable: ffmpeg was not found on the server." : null,
-          ].filter(Boolean).join(" ")}
-        </div>
-      )}
+      {environmentNotice && <div className="env-notice" role="status">{environmentNotice}</div>}
       <EditorHeader
         title={title}
         saveStatus={saveStatus}
@@ -2829,6 +2896,21 @@ export function EditorShell() {
             onSeek={seek}
             onPlaybackBlocked={reportPlaybackBlocked}
             onAttachReady={applyPendingSeek}
+            onUploadFiles={uploadFiles}
+            uploadBusy={uploading}
+            voice={
+              <FloatingAssistant
+                state={voice}
+                level={voiceLevel}
+                detail={voiceDetail}
+                lines={voiceLines}
+                pushToTalk={pushToTalk}
+                onTogglePushToTalk={() => setPushToTalk((value) => !value)}
+                onHold={(held) => voiceRef.current?.setHeld(held)}
+                onToggle={voice === "Disconnected" || voice === "Permission error" || voice === "Connection error" ? startVoice : stopVoice}
+                onStop={stopVoice}
+              />
+            }
             onMode={(value) => {
               setPreviewMode(value)
               setPlaying(false)
@@ -2854,17 +2936,6 @@ export function EditorShell() {
             ))}
           </div>
           <div className="mobile-tool-panel mobile-only">{inspector}</div>
-          <FloatingAssistant
-            state={voice}
-            level={voiceLevel}
-            detail={voiceDetail}
-            lines={voiceLines}
-            pushToTalk={pushToTalk}
-            onTogglePushToTalk={() => setPushToTalk((value) => !value)}
-            onHold={(held) => voiceRef.current?.setHeld(held)}
-            onToggle={voice === "Disconnected" || voice === "Permission error" || voice === "Connection error" ? startVoice : stopVoice}
-            onStop={stopVoice}
-          />
           {musicSrc && <audio ref={musicRef} className="visually-hidden" src={musicSrc} loop />}
         </div>
         <aside className="desktop-inspector desktop-only">{inspector}</aside>
@@ -2877,6 +2948,7 @@ export function EditorShell() {
         zoom={zoom}
         height={timelineHeight}
         captionsOn={captionsOn}
+        activeClipId={activeClip?.id ?? null}
         onSeek={seek}
         onZoom={setZoom}
         onResizeStart={startTimelineResize}
@@ -2894,8 +2966,9 @@ export function EditorShell() {
           progress={project?.jobs.export.progress ?? 0}
           error={exportError || project?.jobs.export.error || null}
           downloadUrl={downloadUrl}
+          subtitlesUrl={subtitlesUrl}
           captionsOn={captionsOn}
-          onBegin={beginExport}
+          onBegin={(choice) => void beginExport(choice)}
           onClose={() => setExportOpen(false)}
         />
       )}

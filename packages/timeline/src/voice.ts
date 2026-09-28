@@ -275,8 +275,14 @@ export const VOICE_TOOLS = [
   {
     type: "function",
     name: "export_video",
-    description: "Render a downloadable MP4 of the current edit. Wait for the tool result before saying the file is ready.",
-    parameters: { type: "object", properties: {}, required: [] },
+    description: "Render a downloadable video of the current edit. format is mp4 or webm. quality is 1080p or 720p. Wait for the tool result before saying the file is ready.",
+    parameters: {
+      type: "object",
+      properties: {
+        format: { type: "string", enum: ["mp4", "webm"] },
+        quality: { type: "string", enum: ["1080p", "720p"] },
+      },
+    },
     execution_mode: "hold",
     timeout_seconds: 180,
   },

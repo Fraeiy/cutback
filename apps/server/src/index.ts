@@ -16,6 +16,7 @@ import {
   attachClip,
   present,
   projectSourceDurationMs,
+  readExportOptions,
   removeClip,
   setClipTranscript,
   setPlayback,
@@ -334,7 +335,7 @@ app.post("/api/projects/:id/media", async (request, reply) => {
       });
     }
     const bytes = (await stat(target)).size;
-    for (const name of ["export.mp4", "captions.srt"]) await rm(path.join(dir, name), { force: true });
+    for (const name of ["export.mp4", "export.webm", "captions.srt"]) await rm(path.join(dir, name), { force: true });
     // Appending keeps any cuts already made on the earlier clips.
     attachClip(project, {
       filename: path.basename(incoming.filename || storedName),
@@ -598,6 +599,7 @@ app.post("/api/projects/:id/tools/:name", async (request, reply) => {
         batch: params.name === "apply_instruction_batch",
         earlier: typeof outcome.result.summary === "string" ? outcome.result.summary : "",
         completed: outcome.result.completed,
+        exportOptions: readExportOptions(body.arguments),
       };
     });
 
@@ -616,15 +618,21 @@ app.post("/api/projects/:id/tools/:name", async (request, reply) => {
     };
 
     try {
-      const bytes = await renderExport(stage.snapshot, reportProgress);
+      const bytes = await renderExport(stage.snapshot, reportProgress, stage.exportOptions);
+      const ext = stage.exportOptions.format === "webm" ? "webm" : "mp4";
+      const localName = `export.${ext}`;
       const exportStoredName = usesBlobStorage()
-        ? projectBlobPath(stage.snapshot.id, "export/export.mp4")
-        : "export.mp4";
+        ? projectBlobPath(stage.snapshot.id, `export/${localName}`)
+        : localName;
       const captionsStoredName = usesBlobStorage()
         ? projectBlobPath(stage.snapshot.id, "export/captions.srt")
         : "captions.srt";
       if (usesBlobStorage()) {
-        await uploadPrivateFile(path.join(projectDir(stage.snapshot.id), "export.mp4"), exportStoredName, "video/mp4");
+        await uploadPrivateFile(
+          path.join(projectDir(stage.snapshot.id), localName),
+          exportStoredName,
+          ext === "webm" ? "video/webm" : "video/mp4",
+        );
         await uploadPrivateFile(path.join(projectDir(stage.snapshot.id), "captions.srt"), captionsStoredName, "application/x-subrip");
       }
       const result = {
@@ -788,13 +796,16 @@ app.get("/api/projects/:id/export", async (request, reply) => {
   if (local.jobs.export.status !== "completed") {
     return reply.code(404).send({ error: "Export the edit before downloading." });
   }
-  const filePath = path.join(projectDir(id), "export.mp4");
+  const stored = local.jobs.export.file;
+  const name = stored === "export.webm" || stored === "export.mp4" ? stored : "export.mp4";
+  const filePath = path.join(projectDir(id), name);
   if (!existsSync(filePath)) return reply.code(404).send({ error: "Export the edit before downloading." });
   const info = await statOrNull(filePath);
   if (!info) return reply.code(404).send({ error: "That export is no longer on disk." });
-  reply.header("Content-Type", "video/mp4");
+  const webm = name.endsWith(".webm");
+  reply.header("Content-Type", webm ? "video/webm" : "video/mp4");
   reply.header("Content-Length", info.size);
-  reply.header("Content-Disposition", 'attachment; filename="cutback.mp4"');
+  reply.header("Content-Disposition", `attachment; filename="cutback.${webm ? "webm" : "mp4"}"`);
   return reply.send(createReadStream(filePath));
 });
 
