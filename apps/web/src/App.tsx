@@ -180,10 +180,6 @@ function ratioFromProject(project: PresentedProject | null): string {
   return mode === "wide" ? "16:9" : mode === "square" ? "1:1" : mode === "vertical" ? "9:16" : "Original"
 }
 
-function ratioLabel(ratio: string): string {
-  return ratio === "Original" ? "Original frame" : `${ratio} frame`
-}
-
 function modeFromRatio(ratio: string): "original" | "wide" | "square" | "vertical" {
   return ratio === "16:9" ? "wide" : ratio === "1:1" ? "square" : ratio === "9:16" ? "vertical" : "original"
 }
@@ -388,7 +384,6 @@ export function VideoPreview({
   mode,
   onPlay,
   onSeek,
-  onRatio,
   onMode,
   onVideoReady,
   onVideoTimeUpdate,
@@ -414,7 +409,6 @@ export function VideoPreview({
   mode: "original" | "edited"
   onPlay: () => void
   onSeek: (value: number) => void
-  onRatio: (ratio: string) => void
   onMode: (mode: "original" | "edited") => void
   onVideoReady: (video: HTMLVideoElement | null) => void
   onVideoTimeUpdate: (video: HTMLVideoElement) => void
@@ -503,10 +497,6 @@ export function VideoPreview({
               After
             </button>
           </div>
-          {/* The frame-ratio control used to sit here as a second, duplicate
-              dropdown. Aspect ratio now lives only in the Framing panel, so
-              there is one place to set it rather than two that disagree. */}
-          <span className="toolbar-frame">{ratioLabel(ratio)}</span>
         </div>
       </div>
       <div className="preview-canvas-area">
@@ -2673,7 +2663,6 @@ export function EditorShell() {
             onSeek={seek}
             onPlaybackBlocked={reportPlaybackBlocked}
             onAttachReady={applyPendingSeek}
-            onRatio={(value) => void runTool("set_aspect_ratio", { mode: modeFromRatio(value) })}
             onMode={(value) => {
               setPreviewMode(value)
               setPlaying(false)
