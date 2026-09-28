@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { PresentedProject, Proposal, ResolvedSegment } from "@cutback/timeline"
 import { api, saveToken, type Health } from "./api"
 import { VoiceSession, type VoicePhase } from "./voice"
@@ -170,6 +170,18 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
   )
 }
 
+/** Timeline height bounds. The floor keeps the tracks usable; the ceiling
+ *  leaves the preview enough room to stay watchable. */
+const TIMELINE_MIN_H = 132
+const TIMELINE_MAX_H = 420
+const TIMELINE_KEY = "cutback.timelineHeight.v1"
+/** Bars across the whole timeline. Wide enough to read, few enough to stay crisp. */
+const WAVEFORM_BARS = 160
+
+function clampTimelineHeight(value: number): number {
+  return Math.max(TIMELINE_MIN_H, Math.min(TIMELINE_MAX_H, Math.round(value)))
+}
+
 function formatTime(value: number) {
   const seconds = Math.max(0, Math.round(value))
   return `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${(seconds % 60).toString().padStart(2, "0")}`
@@ -235,6 +247,9 @@ export function EditorHeader({
           <input
             aria-label="Project title"
             value={title}
+            // Long names ellipsize in the field; the full value stays available
+            // on hover and to assistive tech.
+            title={title}
             onChange={(event) => onTitle(event.target.value)}
           />
         </label>
@@ -546,16 +561,20 @@ export function VideoPreview({
               {/* With word highlight on, the spoken word gets the highlight
                   colour, matching how the export burns the same cue in. */}
               {wordHighlight && activeCue.words.length > 0
-                ? activeCue.words.map((word) => {
+                ? activeCue.words.map((word, index) => {
                     const spoken = currentTime * 1000 >= word.outputStartMs && currentTime * 1000 <= word.outputEndMs;
                     return (
-                      <span
-                        key={word.id}
-                        className={spoken ? "word spoken" : "word"}
-                        style={spoken ? { background: highlightColor, color: "#102016" } : undefined}
-                      >
-                        {word.text}
-                      </span>
+                      <Fragment key={word.id}>
+                        {/* The export joins words with spaces; without this the
+                            preview runs them together. */}
+                        {index > 0 ? " " : null}
+                        <span
+                          className={spoken ? "word spoken" : "word"}
+                          style={spoken ? { background: highlightColor, color: "#102016" } : undefined}
+                        >
+                          {word.text}
+                        </span>
+                      </Fragment>
                     );
                   })
                 : activeCue.text}
@@ -819,10 +838,16 @@ function Preset({
   active: boolean
   onClick: () => void
 }) {
+  const label = name[0].toUpperCase() + name.slice(1)
   return (
-    <button className={`preset ${active ? "active" : ""}`} onClick={onClick}>
-      <span className={`sample-${name}`}>Your words</span>
-      <b>{name[0].toUpperCase() + name.slice(1)}</b>
+    <button
+      className={`preset ${active ? "active" : ""}`}
+      onClick={onClick}
+      aria-pressed={active}
+      aria-label={`${label} caption style`}
+    >
+      <span className={`sample sample-${name}`}>Your words</span>
+      <b>{label}</b>
     </button>
   )
 }
@@ -915,22 +940,26 @@ export function CaptionInspector({
             )}
           </div>
         </div>
-        <div className="colour-row">
-          <span>Highlight</span>
-          <div className="swatches">
-            {["mint", "yellow", "orange", "rose", "violet", "blue"].map(
-              (color) => (
-                <button
-                  key={color}
-                  className={`swatch ${color} ${highlightColor === color ? "selected" : ""}`}
-                  aria-label={`${color} highlight`}
-                  aria-pressed={highlightColor === color}
-                  onClick={() => onHighlightColor(color)}
-                />
-              ),
-            )}
+        {/* The highlight colour only affects the karaoke style, so it is hidden
+            otherwise rather than sitting there as a control that does nothing. */}
+        {style === "highlight" && (
+          <div className="colour-row">
+            <span>Highlight</span>
+            <div className="swatches">
+              {["mint", "yellow", "orange", "rose", "violet", "blue"].map(
+                (color) => (
+                  <button
+                    key={color}
+                    className={`swatch ${color} ${highlightColor === color ? "selected" : ""}`}
+                    aria-label={`${color} highlight`}
+                    aria-pressed={highlightColor === color}
+                    onClick={() => onHighlightColor(color)}
+                  />
+                ),
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </fieldset>
       <fieldset className="tight">
         <legend>Position</legend>
@@ -1316,9 +1345,12 @@ export function Timeline({
   waveform,
   currentTime,
   zoom,
+  height,
   captionsOn,
   onSeek,
   onZoom,
+  onResizeStart,
+  onResizeKey,
 }: {
   project: PresentedProject | null
   /** Generated frames per clip id, so each segment shows its own footage. */
@@ -1326,14 +1358,33 @@ export function Timeline({
   waveform: number[]
   currentTime: number
   zoom: number
+  /** Current timeline height in px, mirrored onto the separator for AT. */
+  height: number
   captionsOn: boolean
   onSeek: (time: number) => void
   onZoom: (zoom: number) => void
+  onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void
+  onResizeKey: (event: React.KeyboardEvent<HTMLDivElement>) => void
 }) {
   const duration = (project?.outputDurationMs ?? 0) / 1000
   const ticks = [0, .25, .5, .75, 1]
+  // One fraction drives the ruler, clips, caption cues, waveform and playhead,
+  // so they cannot drift apart at any zoom level.
+  const fraction = duration > 0 ? Math.max(0, Math.min(1, currentTime / duration)) : 0
   return (
     <section className="timeline">
+      <div
+        className="timeline-resizer"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize timeline"
+        aria-valuenow={Math.round(height)}
+        aria-valuemin={TIMELINE_MIN_H}
+        aria-valuemax={TIMELINE_MAX_H}
+        tabIndex={0}
+        onPointerDown={onResizeStart}
+        onKeyDown={onResizeKey}
+      />
       <div className="timeline-toolbar">
         <b>
           <Icon name="document" size={17} />
@@ -1352,7 +1403,8 @@ export function Timeline({
           />
         </label>
         <span className="timeline-meta">
-          {formatTime(duration)} duration&nbsp;&nbsp;|&nbsp;&nbsp;{project?.edit.history.length ?? 0} edits
+          {formatTime(duration)} duration&nbsp;&nbsp;|&nbsp;&nbsp;{project?.edit.history.length ?? 0}{" "}
+          {(project?.edit.history.length ?? 0) === 1 ? "edit" : "edits"}
         </span>
       </div>
       <div className="timeline-scroll">
@@ -1360,6 +1412,16 @@ export function Timeline({
           className="timeline-content"
           style={{ "--timeline-zoom": zoom } as React.CSSProperties}
         >
+          {/* The timestamp lives in its own strip above the ruler, so it can
+              never land on a tick label. */}
+          <div className="timeline-headstrip">
+            <div
+              className="playhead-label"
+              style={{ left: `clamp(calc(var(--gutter) + 22px), calc(var(--gutter) + (100% - var(--gutter)) * ${fraction}), calc(100% - 22px))` }}
+            >
+              {formatTime(currentTime)}
+            </div>
+          </div>
           <div className="ruler">
             {ticks.map((tick) => (
               <span key={tick} style={{ left: `${tick * 100}%` }}>
@@ -1377,10 +1439,8 @@ export function Timeline({
           />
           <div
             className="playhead"
-            style={{ left: `calc(112px + (100% - 112px) * ${duration > 0 ? Math.min(1, currentTime / duration) : 0})` }}
-          >
-            <span>{formatTime(currentTime)}</span>
-          </div>
+            style={{ left: `calc(var(--gutter) + (100% - var(--gutter)) * ${fraction})` }}
+          />
           <div className="track video-track">
             <label>
               <Icon name="document" size={17} />
@@ -1411,7 +1471,17 @@ export function Timeline({
             <div className="caption-clips">
               {captionsOn
                 ? (project?.cues ?? []).map((cue) => (
-                    <span key={cue.id} title={cue.text}>{cue.text}</span>
+                    <span
+                      key={cue.id}
+                      className="caption-cue"
+                      title={cue.text}
+                      style={{
+                        left: `${duration > 0 ? (cue.outputStartMs / 1000 / duration) * 100 : 0}%`,
+                        width: `${duration > 0 ? ((cue.outputEndMs - cue.outputStartMs) / 1000 / duration) * 100 : 0}%`,
+                      }}
+                    >
+                      {cue.text}
+                    </span>
                   ))
                 : <span className="track-off">Captions off</span>}
             </div>
@@ -1422,8 +1492,8 @@ export function Timeline({
               Audio
             </label>
             <div className="waveform">
-              {(waveform.length ? waveform : Array.from({ length: 120 }, () => 0.18)).map((peak, n) => (
-                <i key={n} style={{ height: `${Math.max(12, peak * 100)}%` }} />
+              {(waveform.length ? waveform : Array.from({ length: WAVEFORM_BARS }, () => 0.18)).map((peak, n) => (
+                <i key={n} style={{ height: `${Math.max(10, Math.min(100, peak * 100))}%` }} />
               ))}
             </div>
           </div>
@@ -1712,6 +1782,12 @@ export function EditorShell() {
   const [waveform, setWaveform] = useState<number[]>([])
   const [needsToken, setNeedsToken] = useState(false)
   const [pushToTalk, setPushToTalk] = useState(false)
+  // Remembered timeline height, so a chosen size survives a reload. Clamped on
+  // read because a stored value can predate a window resize.
+  const [timelineHeight, setTimelineHeight] = useState(() => {
+    const stored = Number(localStorage.getItem(TIMELINE_KEY))
+    return Number.isFinite(stored) && stored > 0 ? clampTimelineHeight(stored) : 208
+  })
 
   const projectRef = useRef<PresentedProject | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -1725,6 +1801,69 @@ export function EditorShell() {
   const segmentRef = useRef<string | null>(null)
   /** Whether playback should resume after a clip switch. */
   const pendingPlayRef = useRef(false)
+  /**
+   * Set when the creator scrubs. The video element reports whatever position it
+   * has actually reached, so until it catches up its timeupdate would drag the
+   * playhead straight back to where it was. Ignore those for a moment.
+   */
+  const seekGuardRef = useRef<{ outputMs: number; until: number } | null>(null)
+
+  const applyTimelineHeight = useCallback((value: number) => {
+    setTimelineHeight(clampTimelineHeight(value));
+  }, []);
+
+  // Drag the divider: the timeline tracks the pointer, the workspace takes the
+  // remainder. Pointer capture keeps the drag alive outside the 7px handle.
+  const startTimelineResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const handle = event.currentTarget
+    const shell = document.querySelector(".app-shell")
+    if (!shell) return
+    const startY = event.clientY
+    const startH = timelineHeight
+    handle.setPointerCapture?.(event.pointerId)
+    handle.classList.add("dragging")
+    const move = (moveEvent: PointerEvent) => {
+      applyTimelineHeight(startH + (startY - moveEvent.clientY))
+    }
+    const stop = () => {
+      handle.classList.remove("dragging")
+      handle.releasePointerCapture?.(event.pointerId)
+      window.removeEventListener("pointermove", move)
+      window.removeEventListener("pointerup", stop)
+      window.removeEventListener("pointercancel", stop)
+      setTimelineHeight((value) => {
+        try { localStorage.setItem(TIMELINE_KEY, String(value)) } catch { /* private mode */ }
+        return value
+      })
+    }
+    window.addEventListener("pointermove", move)
+    window.addEventListener("pointerup", stop)
+    window.addEventListener("pointercancel", stop)
+  }, [timelineHeight, applyTimelineHeight])
+
+  const resizeTimelineByKeyboard = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? 48 : 16
+    let next: number | null = null
+    if (event.key === "ArrowUp") next = timelineHeight - step
+    else if (event.key === "ArrowDown") next = timelineHeight + step
+    else if (event.key === "PageUp") next = timelineHeight - 48
+    else if (event.key === "PageDown") next = timelineHeight + 48
+    else if (event.key === "Home") next = TIMELINE_MIN_H
+    else if (event.key === "End") next = TIMELINE_MAX_H
+    if (next === null) return
+    event.preventDefault()
+    const clamped = clampTimelineHeight(next)
+    setTimelineHeight(clamped)
+    try { localStorage.setItem(TIMELINE_KEY, String(clamped)) } catch { /* private mode */ }
+  }, [timelineHeight])
+
+  // A shorter window cannot keep the chosen height without starving the
+  // preview, so pull it back inside the range rather than clipping.
+  useEffect(() => {
+    const onResize = () => setTimelineHeight((value) => clampTimelineHeight(value))
+    window.addEventListener("resize", onResize)
+    return () => window.removeEventListener("resize", onResize)
+  }, [])
 
   // The tone lets the header indicator show whether the app is settled, working
   // or broken, instead of always reading "Saved" regardless of what happened.
@@ -1886,15 +2025,26 @@ export function EditorShell() {
       // Frames stay keyed by clip so the media bin and each timeline segment can
       // show their own footage instead of every clip's frames everywhere.
       setClipFrames(Object.fromEntries(parts.map((part) => [part.clip.id, part.frames])))
-      // Each clip reports a fixed 120 peaks, so repeat it by its time share.
-      setWaveform(
-        parts.flatMap((part) => {
-          const share = part.clip.media.durationMs;
-          if (share <= 0) return [];
-          const repeats = Math.max(1, Math.round(120 * share / (project.sourceDurationMs || share)));
-          return Array.from({ length: repeats }, () => part.wave).flat();
-        }),
-      )
+      // Each clip reports a fixed number of peaks for its own file. Resample
+      // them so the combined waveform has a bar per equal slice of the whole
+      // timeline, whatever the clip count. Repeating the array instead produced
+      // 14,400 bars for a single clip, which drew them sub-pixel wide.
+      const total = project.sourceDurationMs || 1
+      const combined: number[] = []
+      for (const part of parts) {
+        const duration = part.clip.media.durationMs
+        const peaks = part.wave
+        if (duration <= 0 || peaks.length === 0) continue
+        const bars = Math.max(1, Math.round(WAVEFORM_BARS * duration / total))
+        for (let i = 0; i < bars; i += 1) {
+          const from = Math.floor((i * peaks.length) / bars)
+          const to = Math.max(from + 1, Math.floor(((i + 1) * peaks.length) / bars))
+          let peak = 0
+          for (let k = from; k < to && k < peaks.length; k += 1) peak = Math.max(peak, peaks[k])
+          combined.push(peak)
+        }
+      }
+      setWaveform(combined)
     })
     return () => {
       alive = false
@@ -2012,6 +2162,9 @@ export function EditorShell() {
       return
     }
     const target = Math.max(0, Math.min(current.outputDurationMs, seconds * 1000))
+    // Arm the guard before any branch below, so a clip switch cannot be undone
+    // by the incoming element reporting wherever it happens to be.
+    seekGuardRef.current = { outputMs: target, until: performance.now() + 700 }
     const segment =
       current.segments.find((item) => target >= item.outputStartMs && target <= item.outputEndMs) ??
       current.segments[current.segments.length - 1]
@@ -2031,6 +2184,8 @@ export function EditorShell() {
       : segment.sourceStartMs + Math.max(0, target - segment.outputStartMs)
     video.currentTime = localMs / 1000
     segmentRef.current = segment.id
+    // Hold the playhead where it was asked to go until the element catches up.
+    seekGuardRef.current = { outputMs: target, until: performance.now() + 700 }
     setCurrentTime(target / 1000)
   }, [previewMode, activeClipId, playing])
 
@@ -2140,7 +2295,18 @@ export function EditorShell() {
       video.currentTime = segment.clipStartMs / 1000
     }
     const outputMs = segment.outputStartMs + Math.max(0, localMs - segment.clipStartMs)
-    setCurrentTime(outputMs / 1000)
+    // While a scrub is settling, the playhead belongs to the target the creator
+    // asked for, not to wherever the element happens to be. The guard is only
+    // released once the element reports that same place; anything else inside
+    // the window is ignored rather than allowed to drag the playhead backwards.
+    const guard = seekGuardRef.current
+    if (guard && performance.now() < guard.until) {
+      if (Math.abs(outputMs - guard.outputMs) > 400) return
+      seekGuardRef.current = null
+      setCurrentTime(guard.outputMs / 1000)
+    } else {
+      setCurrentTime(outputMs / 1000)
+    }
     setPlaying(!video.paused)
 
     const music = musicRef.current
@@ -2610,7 +2776,7 @@ export function EditorShell() {
   }
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" style={{ "--timeline-h": `${timelineHeight}px` } as React.CSSProperties}>
       {/* Surface a broken environment up front. Without ffmpeg an export fails
           and without an API key transcription fails, and both used to surface
           only as a failed request several steps into a demo. */}
@@ -2709,9 +2875,12 @@ export function EditorShell() {
         waveform={waveform}
         currentTime={currentTime}
         zoom={zoom}
+        height={timelineHeight}
         captionsOn={captionsOn}
         onSeek={seek}
         onZoom={setZoom}
+        onResizeStart={startTimelineResize}
+        onResizeKey={resizeTimelineByKeyboard}
       />
       {moreOpen && (
         <MoreSheet

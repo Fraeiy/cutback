@@ -6,6 +6,9 @@
   --line: #2a2f38;
   --text-primary: #edeff2;
   --text-secondary: #8a8f99;
+  /* Small secondary labels (ruler ticks, track names, field legends) sit at
+     10-11px, where --text-secondary's 5.4:1 reads thin. This is 6.7:1. */
+  --text-label: #9aa1ac;
   --accent: #5ee6c4;
   --accent-warm: #ff8b5e;
   --bg: var(--bg-base);
@@ -16,6 +19,7 @@
   --text: var(--text-primary);
   --muted: var(--text-secondary);
   --dim: #6f767b;
+  --label: var(--text-label);
   --mint: var(--accent);
   --mint-strong: var(--accent);
   --mint-soft: rgba(94, 230, 196, .12);

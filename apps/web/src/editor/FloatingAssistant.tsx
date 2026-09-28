@@ -59,6 +59,8 @@ export function FloatingAssistant({
   const suppressClick = useRef(false);
   /** Pointer is down on the launcher while push to talk is on. */
   const holding = useRef(false);
+  /** Set once the creator has deliberately placed the assistant themselves. */
+  const userPlaced = useRef(false);
   /** That press turned into a drag, so it was not a talk. */
   const moved = useRef(false);
   /** Audio is actually being sent right now. */
@@ -66,6 +68,51 @@ export function FloatingAssistant({
   const holdTimer = useRef<number | null>(null);
   const isError = state === "Permission error" || state === "Connection error";
   const active = state !== "Disconnected" && !isError;
+  /** Collapsed to the five states a creator needs to tell apart. */
+  const phase: "off" | "connecting" | "listening" | "processing" | "error" =
+    isError
+      ? "error"
+      : state === "Disconnected"
+        ? "off"
+        : state === "Connecting"
+          ? "connecting"
+          : state === "Listening"
+            ? "listening"
+            : "processing";
+  const isMobile = typeof window !== "undefined" && window.innerWidth <= 700;
+  /**
+   * First-use placement. The mic belongs in the margin around the picture, not
+   * on the picture and never over the playback controls. The preview area holds
+   * every candidate and excludes the controls by construction, so any band that
+   * fits is automatically safe. Preference order is right, left, below, above.
+   */
+  function defaultSpot(): Point {
+    const size = 56;
+    const margin = 12;
+    if (isMobile) return { x: 8, y: window.innerHeight - 88 };
+    const stage = document.querySelector<HTMLElement>(".video-stage");
+    const canvas = document.querySelector<HTMLElement>(".preview-canvas-area");
+    if (!stage || !canvas) {
+      return { x: window.innerWidth - 80, y: window.innerHeight - 290 };
+    }
+    const s = stage.getBoundingClientRect();
+    const c = canvas.getBoundingClientRect();
+    const midX = s.left + s.width / 2;
+    const midY = s.top + s.height / 2;
+    const bands = [
+      { ok: c.right - s.right >= size + margin, x: s.right + Math.max(margin, (c.right - s.right - size) / 2), y: midY - size / 2 },
+      { ok: s.left - c.left >= size + margin, x: s.left - margin - size, y: midY - size / 2 },
+      { ok: c.bottom - s.bottom >= size + margin, x: midX - size / 2, y: s.bottom + margin },
+      { ok: s.top - c.top >= size + margin, x: midX - size / 2, y: s.top - margin - size },
+    ].filter((band) => band.ok);
+    const pick = bands[0] ?? { x: c.right - size - margin, y: c.bottom - size - margin };
+    // Keep it inside the preview area, which is what guarantees it never lands
+    // on the playback controls below.
+    return {
+      x: Math.max(c.left + 4, Math.min(pick.x, c.right - size - 4)),
+      y: Math.max(c.top + 4, Math.min(pick.y, c.bottom - size - 4)),
+    };
+  }
   function clamp(point: Point): Point {
     const viewport = window.visualViewport;
     const left = viewport?.offsetLeft ?? 0,
@@ -85,6 +132,7 @@ export function FloatingAssistant({
     };
   }
   function save(point: Point) {
+    userPlaced.current = true;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(point));
     } catch {
@@ -92,18 +140,21 @@ export function FloatingAssistant({
     }
   }
   useLayoutEffect(() => {
-    let initial = {
-      x: window.innerWidth - 80,
-      y: window.innerHeight - (window.innerWidth > 700 ? 290 : 88),
-    };
+    // A position the creator chose is kept; only the very first use gets the
+    // computed default. This runs after layout so the preview has been measured.
+    let initial: Point | null = null;
     try {
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null");
-      if (stored && Number.isFinite(stored.x) && Number.isFinite(stored.y))
+      if (stored && Number.isFinite(stored.x) && Number.isFinite(stored.y)) {
         initial = stored;
+        userPlaced.current = true;
+      }
     } catch {
-      /* Use default position. */
+      /* Fall through to the default spot. */
     }
-    setPosition(clamp(initial));
+    setPosition(clamp(initial ?? defaultSpot()));
+    // defaultSpot reads layout, so it must not become a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useLayoutEffect(() => {
     function fit() {
@@ -116,13 +167,11 @@ export function FloatingAssistant({
         setPosition({ x: 8, y: top + height - panelHeight - 8 });
       } else {
         if (root.current) root.current.style.height = "";
+        // A spot the creator chose is kept and merely re-clamped. A spot we
+        // chose is recomputed, so resizing the timeline cannot leave the mic
+        // sitting on the playback controls.
         setPosition((previous) =>
-          clamp(
-            previous ?? {
-              x: window.innerWidth - 80,
-              y: window.innerHeight - 100,
-            },
-          ),
+          clamp(userPlaced.current && previous ? previous : defaultSpot()),
         );
       }
     }
@@ -152,9 +201,21 @@ export function FloatingAssistant({
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null");
       if (stored && Number.isFinite(stored.x) && Number.isFinite(stored.y))
         setPosition(stored);
+      else setPosition(clamp(defaultSpot()));
     } catch {
       /* Retain position. */
     }
+  }
+  /** Forget a chosen spot and go back to the computed default. */
+  function resetPosition(event: React.MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    userPlaced.current = false;
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      /* Storage can be disabled. */
+    }
+    setPosition(clamp(defaultSpot()));
   }
   function down(event: PointerEvent<HTMLElement>) {
     if (event.button !== 0 || (open && window.innerWidth <= 700)) return;
@@ -169,6 +230,18 @@ export function FloatingAssistant({
     };
     suppressClick.current = false;
     event.currentTarget.setPointerCapture(event.pointerId);
+    // Also listen on the window: if the release lands outside the element, or
+    // capture is lost, the drag still has to be committed rather than leaving
+    // the assistant visually moved but unsaved.
+    const settle = () => {
+      window.removeEventListener("pointerup", settle);
+      window.removeEventListener("pointercancel", settle);
+      window.removeEventListener("blur", settle);
+      finishDrag(false);
+    };
+    window.addEventListener("pointerup", settle);
+    window.addEventListener("pointercancel", settle);
+    window.addEventListener("blur", settle);
   }
   function move(event: PointerEvent<HTMLElement>) {
     const current = drag.current;
@@ -179,24 +252,22 @@ export function FloatingAssistant({
     if (current.moved)
       setPosition(clamp({ x: current.start.x + dx, y: current.start.y + dy }));
   }
-  function up(event: PointerEvent<HTMLElement>) {
+  /** Commit the current spot, whether the drag ended cleanly or not. */
+  function finishDrag(cancelled: boolean) {
     const current = drag.current;
-    if (!current || current.id !== event.pointerId) return;
-    suppressClick.current = current.moved;
-    if (current.moved && position) {
-      const next = clamp({
-        ...position,
-        x:
-          !open && window.innerWidth <= 700
-            ? position.x < window.innerWidth / 2
-              ? 12
-              : window.innerWidth - 68
-            : position.x,
-      });
-      setPosition(next);
-      save(next);
-    }
     drag.current = null;
+    if (!current) return;
+    if (current.moved && position) {
+      suppressClick.current = true;
+      setPosition(position);
+      save(position);
+    } else {
+      suppressClick.current = cancelled;
+    }
+  }
+  function up(event: PointerEvent<HTMLElement>) {
+    if (!drag.current || drag.current.id !== event.pointerId) return;
+    finishDrag(false);
   }
   function keyMove(event: KeyboardEvent<HTMLElement>) {
     if (!position || !event.altKey || !event.key.startsWith("Arrow")) return;
@@ -216,10 +287,10 @@ export function FloatingAssistant({
     onPointerDown: down,
     onPointerMove: move,
     onPointerUp: up,
-    onPointerCancel: () => {
-      drag.current = null;
-      suppressClick.current = true;
-    },
+    onPointerCancel: () => finishDrag(true),
+    // A drag released outside the window still gets committed, otherwise the
+    // spot is lost and the launcher jumps back on the next load.
+    onLostPointerCapture: () => finishDrag(false),
     onKeyDown: keyMove,
   };
   return (
@@ -242,7 +313,7 @@ export function FloatingAssistant({
       {!open ? (
         <button
           ref={launcher}
-          className={`assistant-launcher ${pushToTalk ? "ptt" : ""}`}
+          className={`assistant-launcher phase-${phase} ${pushToTalk ? "ptt" : ""}`}
           {...dragEvents}
           // Push to talk shares this button with dragging, so a hold only counts
           // once the pointer has stayed put: a moved pointer is a drag.
@@ -288,7 +359,9 @@ export function FloatingAssistant({
           aria-label={
             active
               ? `Open conversation. Voice ${state.toLowerCase()}`
-              : "Ask Cutback. Open voice assistant"
+              : isError
+                ? `Open conversation. ${detail ?? "Voice error"}`
+                : "Ask Cutback. Open voice assistant"
           }
           aria-expanded={false}
           title={
@@ -298,9 +371,12 @@ export function FloatingAssistant({
           }
         >
           <Mic />
-          <span className="assistant-status-dot" />
+          {/* One dot per voice state, so off / connecting / listening /
+              processing / error are told apart at a glance and not just by
+              the tooltip. */}
+          <span className={`assistant-status-dot phase-${phase}`} data-phase={phase} />
           <span className="assistant-launcher-label">
-            {active ? state : isError ? "Voice error" : "Ask Cutback"}
+            {active ? state : isError ? detail ?? "Voice error" : "Ask Cutback"}
           </span>
         </button>
       ) : (
@@ -327,6 +403,13 @@ export function FloatingAssistant({
               title="Push to talk: only send audio while V is held, so the agent never hears your video"
             >
               PTT
+            </button>
+            <button
+              className="assistant-reset"
+              onClick={resetPosition}
+              title="Move the assistant back to its default spot"
+            >
+              Reset position
             </button>
             <button
               ref={minimize}
