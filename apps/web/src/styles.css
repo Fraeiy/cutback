@@ -204,7 +204,7 @@ h2 { font-size: 16px; margin: 0; letter-spacing: -.2px; }
 .toggle-row.compact input:checked + i::after { left: 17px; }
 .inspector-empty { margin: 18px 2px; font-size: 12px; line-height: 1.5; color: var(--muted); }
 /* Push to talk toggle in the assistant header. */
-.assistant-ptt { flex: none; height: 22px; padding: 0 8px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--muted); font-size: 9px; letter-spacing: .06em; cursor: pointer; }
+.assistant-ptt { flex: none; height: 22px; padding: 0 8px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--muted); font-size: 10px; letter-spacing: .06em; cursor: pointer; }
 .assistant-ptt:hover { color: var(--text); }
 .assistant-ptt.on { border-color: var(--mint); color: #09271f; background: var(--mint); }
 .assistant-launcher.ptt { box-shadow: 0 0 0 2px var(--mint), 0 5px 22px #0006; }
@@ -544,16 +544,24 @@ button:focus-visible, [tabindex]:focus-visible, input:focus-visible, select:focu
   .assistant-status-dot { animation: none !important; }
 }
 /* Reset lives in the panel header next to PTT. */
-.assistant-reset { flex: none; height: 22px; padding: 0 8px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--muted); font-size: 9px; letter-spacing: .04em; cursor: pointer; white-space: nowrap; }
+.assistant-reset { flex: none; height: 22px; padding: 0 8px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--muted); font-size: 10px; cursor: pointer; white-space: nowrap; }
 .assistant-reset:hover { color: var(--text); border-color: #3d4750; }
 .assistant-reset:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
 .floating-assistant.is-open { width: 340px; height: min(460px, calc(100dvh - 24px)); display: flex; flex-direction: column; border: 1px solid #414b55; border-radius: 16px; background: #171c22; box-shadow: 0 16px 60px #0008; overflow: hidden; }
-.assistant-header { display: flex; align-items: center; gap: 10px; flex: none; padding: 14px; border-bottom: 1px solid var(--border); cursor: grab; touch-action: none; user-select: none; }
+.assistant-header { display: flex; align-items: center; gap: 8px; flex: none; min-width: 0; padding: 12px 14px; border-bottom: 1px solid var(--border); cursor: grab; touch-action: none; user-select: none; }
+/* The title takes the slack and truncates, so the controls beside it keep their
+   size instead of being squeezed. */
+.assistant-header > div { flex: 1 1 auto; min-width: 0; }
+.assistant-header > div b, .assistant-header > div small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-grip { flex: none; }
 .assistant-grip { color: var(--muted); font-size: 22px; }
 .assistant-header > div { flex: 1; display: grid; gap: 4px; }
 .assistant-header b { font-size: 13px; }
 .assistant-header small { font-size: 10px; color: var(--muted); }
-.assistant-header button { font-size: 23px; }
+/* Only the minimise glyph wants to be large. This used to target every button
+   in the header, which outranked the PTT and Reset rules and blew the 340px
+   header apart. */
+.assistant-header .icon-btn { font-size: 23px; }
 .assistant-conversation { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 16px; scrollbar-width: thin; }
 .assistant-empty { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 12px 0; }
 .assistant-empty > span { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 14px; background: var(--mint-soft); color: var(--mint); }

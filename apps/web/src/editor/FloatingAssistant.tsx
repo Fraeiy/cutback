@@ -407,9 +407,10 @@ export function FloatingAssistant({
             <button
               className="assistant-reset"
               onClick={resetPosition}
+              aria-label="Reset position"
               title="Move the assistant back to its default spot"
             >
-              Reset position
+              Reset
             </button>
             <button
               ref={minimize}
