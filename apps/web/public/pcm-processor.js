@@ -8,7 +8,6 @@ class PCMProcessor extends AudioWorkletProcessor {
     this.pending = [];
     this.speaking = false;
     this.hang = 0;
-    this.levelTick = 0;
   }
 
   process(inputs) {
@@ -30,9 +29,6 @@ class PCMProcessor extends AudioWorkletProcessor {
         this.port.postMessage({ type: "vad", speaking: false, rms });
       }
     }
-    this.levelTick += 1;
-    if (this.levelTick % 8 === 0) this.port.postMessage({ type: "level", rms });
-
     const out = [];
     while (this.cursor < input.length) {
       const index = Math.floor(this.cursor);

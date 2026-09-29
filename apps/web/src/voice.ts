@@ -64,7 +64,7 @@ export class VoiceSession {
     await audio.resume();
     const marked = audio as AudioContext & { cutbackWorklet?: boolean };
     if (!marked.cutbackWorklet) {
-      await audio.audioWorklet.addModule("/pcm-processor.js?v=2");
+      await audio.audioWorklet.addModule("/pcm-processor.js?v=3");
       marked.cutbackWorklet = true;
     }
     const stream = await navigator.mediaDevices.getUserMedia({

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { PresentedProject, Proposal, ResolvedSegment } from "@cutback/timeline"
 import { api, saveToken, type Health } from "./api"
 import { VoiceSession, type VoicePhase } from "./voice"
@@ -39,16 +39,25 @@ const HIGHLIGHT_COLORS: Record<string, string> = {
 
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
   const paths: Record<string, React.ReactNode> = {
-    play: <path d="m8 5 10 7-10 7V5Z" />,
+    // Filled, and shifted so the triangle's weight sits on the circle's centre.
+    // A stroked outline in the geometric middle reads left of the button.
+    play: <path fill="currentColor" stroke="none" d="M10.2 4.8 19.15 12 10.2 19.2Z" />,
     pause: (
       <>
-        <path d="M8 5v14M16 5v14" />
+        <rect fill="currentColor" stroke="none" x="6.35" y="4.7" width="3.55" height="14.6" rx="0.9" />
+        <rect fill="currentColor" stroke="none" x="14.1" y="4.7" width="3.55" height="14.6" rx="0.9" />
       </>
     ),
     volume: (
       <>
         <path d="M5 10v4h4l5 4V6l-5 4H5Z" />
         <path d="M17 9a4 4 0 0 1 0 6" />
+      </>
+    ),
+    volumeOff: (
+      <>
+        <path d="M5 10v4h4l5 4V6l-5 4H5Z" />
+        <path d="m17 10 4 4M21 10l-4 4" />
       </>
     ),
     expand: (
@@ -225,6 +234,7 @@ export function EditorHeader({
   canUndo,
   canRedo,
   onMore,
+  onHome,
 }: {
   title: string
   saveStatus: string
@@ -237,11 +247,14 @@ export function EditorHeader({
   canUndo: boolean
   canRedo: boolean
   onMore: () => void
+  onHome: () => void
 }) {
   return (
     <header className="editor-header">
       <div className="desktop-only header-left">
-        <Brand />
+        <button className="brand-home" type="button" onClick={onHome} aria-label="Back to the start page">
+          <Brand />
+        </button>
         <span className="header-divider" />
         <label className="breadcrumb">
           Projects&nbsp; / &nbsp;
@@ -260,7 +273,9 @@ export function EditorHeader({
         </span>
       </div>
       <div className="mobile-only mobile-head">
-        <Brand />
+        <button className="brand-home" type="button" onClick={onHome} aria-label="Back to the start page">
+          <Brand />
+        </button>
         <span className="mobile-project">
           <b>{title}</b>
           {saveStatus !== "Saved" && saveStatus !== "Loading…" && (
@@ -293,6 +308,7 @@ export function EditorHeader({
           <Icon name="more" />
         </button>
         <button className="primary export-button" onClick={onExport}>
+          <Icon name="upload" size={15} />
           Export
         </button>
       </div>
@@ -315,7 +331,9 @@ export function ToolNavigation({
           className={active === tool.id ? "active" : ""}
           onClick={() => onChange(tool.id)}
         >
-          <Icon name={tool.icon} size={21} />
+          <span className="tool-glyph">
+            <Icon name={tool.icon} size={18} />
+          </span>
           <span>{tool.label}</span>
         </button>
       ))}
@@ -342,6 +360,32 @@ export function PlaybackControls({
   onMute: () => void
   onFullscreen: () => void
 }) {
+  // The thumb follows this draft while the pointer is down. Feeding the
+  // playhead back into the control makes the thumb jump, because timeupdate
+  // reports where the file actually is, a moment behind the drag.
+  const dragging = useRef(false)
+  const [drag, setDrag] = useState<number | null>(null)
+  const pending = useRef(currentTime)
+  const seekFrame = useRef<number | null>(null)
+  const shown = drag ?? currentTime
+  const queueSeek = (next: number) => {
+    pending.current = next
+    if (seekFrame.current != null) return
+    seekFrame.current = requestAnimationFrame(() => {
+      seekFrame.current = null
+      onSeek(pending.current)
+    })
+  }
+  const endDrag = () => {
+    if (!dragging.current) return
+    dragging.current = false
+    if (seekFrame.current != null) {
+      cancelAnimationFrame(seekFrame.current)
+      seekFrame.current = null
+      onSeek(pending.current)
+    }
+    setDrag(null)
+  }
   return (
     <div className="playback">
       <button
@@ -350,29 +394,44 @@ export function PlaybackControls({
         disabled={duration <= 0}
         aria-label={playing ? "Pause" : "Play"}
       >
-        <Icon name={playing ? "pause" : "play"} size={22} />
+        <Icon name={playing ? "pause" : "play"} size={18} />
       </button>
-      <span className="time">{formatTime(currentTime)} / {formatTime(duration)}</span>
+      <span className="time">{formatTime(shown)} / {formatTime(duration)}</span>
       <input
         aria-label="Playback position"
         type="range"
         min="0"
         max={Math.max(duration, 0.1)}
         step=".1"
-        value={currentTime}
-        onChange={(event) => onSeek(Number(event.target.value))}
+        value={shown}
+        onPointerDown={() => {
+          dragging.current = true
+          pending.current = currentTime
+          setDrag(currentTime)
+        }}
+        onChange={(event) => {
+          const next = Number(event.target.value)
+          if (dragging.current) {
+            setDrag(next)
+            queueSeek(next)
+          } else onSeek(next)
+        }}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onLostPointerCapture={endDrag}
         style={
           {
-            "--progress": `${duration > 0 ? (currentTime / duration) * 100 : 0}%`,
+            "--progress": `${duration > 0 ? (shown / duration) * 100 : 0}%`,
           } as React.CSSProperties
         }
       />
       <button
-        className={`icon-btn ${muted ? "muted" : ""}`}
+        className={`icon-btn mute-button ${muted ? "muted" : ""}`}
         onClick={onMute}
         aria-label={muted ? "Unmute preview" : "Mute preview"}
+        title={muted ? "Unmute" : "Mute"}
       >
-        <Icon name="volume" />
+        <Icon name={muted ? "volumeOff" : "volume"} />
       </button>
       <button
         className="icon-btn"
@@ -709,6 +768,52 @@ function MobileTimeline({
   )
 }
 
+const TranscriptSentences = memo(function TranscriptSentences({
+  sentences,
+  query,
+  activeSentenceId,
+  selectedSentenceId,
+  proposal,
+  removedWordIds,
+  onSelect,
+  onPropose,
+}: {
+  sentences: Array<{ id: string; startMs: number; text: string; wordIds: string[] }>
+  query: string
+  activeSentenceId: string | null
+  selectedSentenceId: string | null
+  proposal: Proposal | null
+  removedWordIds: string[]
+  onSelect: (id: string) => void
+  onPropose: (id: string) => void
+}) {
+  const needle = query.trim().toLowerCase()
+  const visible = needle ? sentences.filter((sentence) => sentence.text.toLowerCase().includes(needle)) : sentences
+  return (
+    <div className="transcript-list">
+      {visible.length === 0 && (
+        <p className="inspector-empty">
+          {needle ? "No lines match that search." : "The transcript shows up here once a clip is transcribed."}
+        </p>
+      )}
+      {visible.map((sentence) => (
+        <button
+          key={sentence.id}
+          className={`${activeSentenceId === sentence.id || selectedSentenceId === sentence.id ? "active" : ""} ${
+            proposal?.op?.type === "cut" && proposal.op.sentenceId === sentence.id ? "proposed-remove" : ""
+          } ${sentence.wordIds.every((id) => removedWordIds.includes(id)) ? "removed" : ""}`}
+          onClick={() => onSelect(sentence.id)}
+          onDoubleClick={() => onPropose(sentence.id)}
+        >
+          <time>{formatTime(sentence.startMs / 1000)}</time>
+          <span>{sentence.text}</span>
+          {proposal?.op?.type === "cut" && proposal.op.sentenceId === sentence.id && <em>(remove)</em>}
+        </button>
+      ))}
+    </div>
+  )
+})
+
 export function TranscriptPanel({
   project,
   activeSentenceId,
@@ -749,17 +854,15 @@ export function TranscriptPanel({
   const [searching, setSearching] = useState(false)
   const [query, setQuery] = useState("")
   const sentences = project?.transcript?.sentences ?? []
-  const visibleSentences = query
-    ? sentences.filter((sentence) =>
-        sentence.text.toLowerCase().includes(query.toLowerCase()),
-      )
-    : sentences
   return (
     <section className="inspector transcript-panel">
       <div className="inspector-header">
-        <div>
-          <h2>Transcript</h2>
-          <span className="desktop-only">Select a sentence to edit</span>
+        <div className="panel-title">
+          <span className="panel-mark"><Icon name="document" size={16} /></span>
+          <div>
+            <h2>Transcript</h2>
+            <span className="desktop-only">Select a sentence to edit</span>
+          </div>
         </div>
         <div>
           <button
@@ -805,29 +908,16 @@ export function TranscriptPanel({
           Redo
         </button>
       </div>
-      <div className="transcript-list">
-        {visibleSentences.length === 0 && (
-          <p className="inspector-empty">
-            {query
-              ? "No lines match that search."
-              : "The transcript shows up here once a clip is transcribed."}
-          </p>
-        )}
-        {visibleSentences.map((sentence) => (
-          <button
-            key={sentence.id}
-            className={`${activeSentenceId === sentence.id || selectedSentenceId === sentence.id ? "active" : ""} ${
-              proposal?.op?.type === "cut" && proposal.op.sentenceId === sentence.id ? "proposed-remove" : ""
-            } ${sentence.wordIds.every((id) => project?.removedWordIds.includes(id)) ? "removed" : ""}`}
-            onClick={() => onSelect(sentence.id)}
-            onDoubleClick={() => onPropose(sentence.id)}
-          >
-            <time>{formatTime(sentence.startMs / 1000)}</time>
-            <span>{sentence.text}</span>
-            {proposal?.op?.type === "cut" && proposal.op.sentenceId === sentence.id && <em>(remove)</em>}
-          </button>
-        ))}
-      </div>
+      <TranscriptSentences
+        sentences={sentences}
+        query={query}
+        activeSentenceId={activeSentenceId}
+        selectedSentenceId={selectedSentenceId}
+        proposal={proposal}
+        removedWordIds={project?.removedWordIds ?? []}
+        onSelect={onSelect}
+        onPropose={onPropose}
+      />
       {sentences.length > 0 && (
         <button
           className="selection-action"
@@ -901,7 +991,10 @@ export function CaptionInspector({
   return (
     <section className="inspector settings-panel">
       <div className="inspector-header">
-        <h2>Captions</h2>
+        <div className="panel-title">
+          <span className="panel-mark"><Icon name="captions" size={16} /></span>
+          <h2>Captions</h2>
+        </div>
         <label className="toggle-row compact">
           <span>Show captions</span>
           <input
@@ -1002,15 +1095,80 @@ export function CaptionInspector({
   )
 }
 
+function MixSlider({
+  label,
+  value,
+  onLive,
+  onCommit,
+}: {
+  label: string
+  value: number
+  onLive: (value: number) => void
+  onCommit: (value: number) => void
+}) {
+  const [draft, setDraft] = useState(value)
+  const dragging = useRef(false)
+  const committed = useRef(value)
+  useEffect(() => {
+    if (dragging.current) return
+    committed.current = value
+    setDraft(value)
+  }, [value])
+  function commit(next: number) {
+    if (next === committed.current) return
+    committed.current = next
+    onCommit(next)
+  }
+  return (
+    <label className="range-row">
+      <span>{label}</span>
+      <input
+        aria-label={label}
+        type="range"
+        min={0}
+        max={100}
+        value={draft}
+        style={{ "--progress": `${draft}%` } as React.CSSProperties}
+        onPointerDown={() => {
+          dragging.current = true
+        }}
+        onChange={(event) => {
+          const next = Number(event.target.value)
+          setDraft(next)
+          onLive(next)
+        }}
+        onPointerUp={(event) => {
+          dragging.current = false
+          commit(Number(event.currentTarget.value))
+        }}
+        onPointerCancel={() => {
+          dragging.current = false
+        }}
+        onKeyUp={(event) => {
+          if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return
+          commit(Number(event.currentTarget.value))
+        }}
+        onBlur={(event) => {
+          dragging.current = false
+          commit(Number(event.currentTarget.value))
+        }}
+      />
+      <output>{draft}%</output>
+    </label>
+  )
+}
+
 export function AudioInspector({
   volume,
   music,
   musicVolume,
   duckMusic,
   onVolume,
+  onVolumeLive,
   onMusicFile,
   onRemoveMusic,
   onMusicVolume,
+  onMusicVolumeLive,
   onDuckMusic,
 }: {
   volume: number
@@ -1018,31 +1176,26 @@ export function AudioInspector({
   musicVolume: number
   duckMusic: boolean
   onVolume: (volume: number) => void
+  onVolumeLive: (volume: number) => void
   onMusicFile: (file: File) => void
   onRemoveMusic: () => void
   onMusicVolume: (volume: number) => void
+  onMusicVolumeLive: (volume: number) => void
   onDuckMusic: (enabled: boolean) => void
 }) {
   const musicInput = useRef<HTMLInputElement>(null)
   return (
     <section className="inspector settings-panel">
       <div className="inspector-header">
-        <div>
-          <h2>Audio</h2>
-          <span>Balance speech and music</span>
+        <div className="panel-title">
+          <span className="panel-mark"><Icon name="wave" size={16} /></span>
+          <div>
+            <h2>Audio</h2>
+            <span>Balance speech and music</span>
+          </div>
         </div>
       </div>
-      <label className="range-row">
-        <span>Speech volume</span>
-        <input
-          type="range"
-          min="0"
-          max="100"
-          value={volume}
-          onChange={(event) => onVolume(Number(event.target.value))}
-        />
-        <output>{volume}%</output>
-      </label>
+      <MixSlider label="Speech volume" value={volume} onLive={onVolumeLive} onCommit={onVolume} />
       <input
         ref={musicInput}
         className="visually-hidden"
@@ -1081,17 +1234,7 @@ export function AudioInspector({
       )}
       {music && (
         <>
-          <label className="range-row">
-            <span>Music volume</span>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={musicVolume}
-              onChange={(event) => onMusicVolume(Number(event.target.value))}
-            />
-            <output>{musicVolume}%</output>
-          </label>
+          <MixSlider label="Music volume" value={musicVolume} onLive={onMusicVolumeLive} onCommit={onMusicVolume} />
           <label className="toggle-row">
             <span>Duck music under speech</span>
             <input
@@ -1132,8 +1275,13 @@ function MediaPanel({
   return (
     <section className="inspector settings-panel">
       <div className="inspector-header">
-        <h2>Media</h2>
-        {clips.length > 0 && <span>{clips.length} {clips.length === 1 ? "clip" : "clips"}</span>}
+        <div className="panel-title">
+          <span className="panel-mark"><Icon name="folder" size={16} /></span>
+          <div>
+            <h2>Media</h2>
+            {clips.length > 0 && <span>{clips.length} {clips.length === 1 ? "clip" : "clips"}</span>}
+          </div>
+        </div>
       </div>
       {clips.length > 0 ? (
         <div className="media-bin" aria-label="Project clips">
@@ -1237,7 +1385,10 @@ export function FramingControls({
   return (
     <section className="inspector settings-panel">
       <div className="inspector-header">
-        <h2>Framing</h2>
+        <div className="panel-title">
+          <span className="panel-mark"><Icon name="frame" size={16} /></span>
+          <h2>Framing</h2>
+        </div>
       </div>
       <fieldset>
         <legend>Aspect ratio</legend>
@@ -1294,9 +1445,12 @@ export function HistoryPanel({
   return (
     <section className="inspector settings-panel">
       <div className="inspector-header">
-        <div>
-          <h2>History</h2>
-          <span>{project?.edit.history.length ?? 0} edits in this version</span>
+        <div className="panel-title">
+          <span className="panel-mark"><Icon name="history" size={16} /></span>
+          <div>
+            <h2>History</h2>
+            <span>{project?.edit.history.length ?? 0} edits in this version</span>
+          </div>
         </div>
       </div>
       <div className="history-actions">
@@ -1332,6 +1486,83 @@ export function HistoryPanel({
     </section>
   )
 }
+
+const TimelineTracks = memo(function TimelineTracks({
+  project,
+  clipFrames,
+  waveform,
+  captionsOn,
+  activeClipId,
+  duration,
+}: {
+  project: PresentedProject | null
+  clipFrames: Record<string, string[]>
+  waveform: number[]
+  captionsOn: boolean
+  activeClipId: string | null
+  duration: number
+}) {
+  return (
+    <>
+      <div className="track video-track">
+        <label>
+          <Icon name="film" size={17} />
+          Video
+        </label>
+        <div className="clip-lane">
+          {(project?.segments ?? []).map((segment) => (
+            <div
+              className={`clip ${segment.clipId === activeClipId ? "selected" : ""}`}
+              key={segment.id}
+              style={{
+                left: `${duration > 0 ? (segment.outputStartMs / 1000 / duration) * 100 : 0}%`,
+                width: `${duration > 0 ? ((segment.outputEndMs - segment.outputStartMs) / 1000 / duration) * 100 : 0}%`,
+              }}
+            >
+              {(clipFrames[segment.clipId] ?? []).map((thumbnail, index) => (
+                <img key={index} src={thumbnail} alt="" />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className={`track caption-track ${captionsOn ? "" : "muted"}`}>
+        <label>
+          <Icon name="captions" size={17} />
+          Captions
+        </label>
+        <div className="caption-clips">
+          {captionsOn
+            ? (project?.cues ?? []).map((cue) => (
+                <span
+                  key={cue.id}
+                  className="caption-cue"
+                  title={cue.text}
+                  style={{
+                    left: `${duration > 0 ? (cue.outputStartMs / 1000 / duration) * 100 : 0}%`,
+                    width: `${duration > 0 ? ((cue.outputEndMs - cue.outputStartMs) / 1000 / duration) * 100 : 0}%`,
+                  }}
+                >
+                  {cue.text}
+                </span>
+              ))
+            : <span className="track-off">Captions off</span>}
+        </div>
+      </div>
+      <div className="track audio-track">
+        <label>
+          <Icon name="wave" size={17} />
+          Audio
+        </label>
+        <div className="waveform">
+          {project && waveform.length ? waveform.map((peak, n) => (
+            <i key={n} style={{ height: `${Math.max(10, Math.min(100, peak * 100))}%` }} />
+          )) : <span className="track-off">{project ? "Reading audio…" : "No audio yet"}</span>}
+        </div>
+      </div>
+    </>
+  )
+})
 
 export function Timeline({
   project,
@@ -1439,62 +1670,14 @@ export function Timeline({
             className="playhead"
             style={{ left: `calc(var(--gutter) + (100% - var(--gutter)) * ${fraction})` }}
           />
-          <div className="track video-track">
-            <label>
-              <Icon name="film" size={17} />
-              Video
-            </label>
-            <div className="clip-lane">
-              {(project?.segments ?? []).map((segment) => (
-                <div
-                  className={`clip ${segment.clipId === activeClipId ? "selected" : ""}`}
-                  key={segment.id}
-                  style={{
-                    left: `${duration > 0 ? (segment.outputStartMs / 1000 / duration) * 100 : 0}%`,
-                    width: `${duration > 0 ? ((segment.outputEndMs - segment.outputStartMs) / 1000 / duration) * 100 : 0}%`,
-                  }}
-                >
-                  {((clipFrames[segment.clipId] ?? [])).map((thumbnail, index) => (
-                    <img key={index} src={thumbnail} alt="" />
-                  ))}
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className={`track caption-track ${captionsOn ? "" : "muted"}`}>
-            <label>
-              <Icon name="captions" size={17} />
-              Captions
-            </label>
-            <div className="caption-clips">
-              {captionsOn
-                ? (project?.cues ?? []).map((cue) => (
-                    <span
-                      key={cue.id}
-                      className="caption-cue"
-                      title={cue.text}
-                      style={{
-                        left: `${duration > 0 ? (cue.outputStartMs / 1000 / duration) * 100 : 0}%`,
-                        width: `${duration > 0 ? ((cue.outputEndMs - cue.outputStartMs) / 1000 / duration) * 100 : 0}%`,
-                      }}
-                    >
-                      {cue.text}
-                    </span>
-                  ))
-                : <span className="track-off">Captions off</span>}
-            </div>
-          </div>
-          <div className="track audio-track">
-            <label>
-              <Icon name="wave" size={17} />
-              Audio
-            </label>
-            <div className="waveform">
-              {project && waveform.length ? waveform.map((peak, n) => (
-                <i key={n} style={{ height: `${Math.max(10, Math.min(100, peak * 100))}%` }} />
-              )) : <span className="track-off">{project ? "Reading audio…" : "No audio yet"}</span>}
-            </div>
-          </div>
+          <TimelineTracks
+            project={project}
+            clipFrames={clipFrames}
+            waveform={waveform}
+            captionsOn={captionsOn}
+            activeClipId={activeClipId}
+            duration={duration}
+          />
         </div>
       </div>
     </section>
@@ -1530,8 +1713,7 @@ export function ExportDialog({
   // Move focus into the dialog when it opens so keyboard users are not left
   // tabbing around the editor behind it.
   useEffect(() => {
-    const first = dialogRef.current?.querySelector<HTMLElement>("button, a[href], input, select")
-    first?.focus()
+    dialogRef.current?.focus()
   }, [])
   return (
     <div
@@ -1540,10 +1722,11 @@ export function ExportDialog({
       onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
       <section
-        className="modal"
+        className="modal export-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="export-title"
+        tabIndex={-1}
         ref={dialogRef}
         // aria-modal alone is a claim, not a behaviour: without this, Tab walked
         // through the whole editor behind the dialog.
@@ -1581,20 +1764,32 @@ export function ExportDialog({
               <Icon name="upload" />
             </span>
             <h2 id="export-title">Export your video</h2>
-            <label>
-              Format
-              <select aria-label="Export format" value={format} onChange={(event) => setFormat(event.target.value === "webm" ? "webm" : "mp4")}>
-                <option value="mp4">MP4</option>
-                <option value="webm">WebM</option>
-              </select>
-            </label>
-            <label>
-              Quality
-              <select aria-label="Export quality" value={quality} onChange={(event) => setQuality(event.target.value === "720p" ? "720p" : "1080p")}>
-                <option value="1080p">1080p</option>
-                <option value="720p">720p</option>
-              </select>
-            </label>
+            <div className="export-choices" role="group" aria-label="Export format">
+              <span>Format</span>
+              <div>
+                <button type="button" className={format === "mp4" ? "active" : ""} aria-pressed={format === "mp4"} onClick={() => setFormat("mp4")}>
+                  <b>MP4</b>
+                  <small>Plays everywhere</small>
+                </button>
+                <button type="button" className={format === "webm" ? "active" : ""} aria-pressed={format === "webm"} onClick={() => setFormat("webm")}>
+                  <b>WebM</b>
+                  <small>Smaller file</small>
+                </button>
+              </div>
+            </div>
+            <div className="export-choices" role="group" aria-label="Export quality">
+              <span>Quality</span>
+              <div>
+                <button type="button" className={quality === "1080p" ? "active" : ""} aria-pressed={quality === "1080p"} onClick={() => setQuality("1080p")}>
+                  <b>1080p</b>
+                  <small>More detail</small>
+                </button>
+                <button type="button" className={quality === "720p" ? "active" : ""} aria-pressed={quality === "720p"} onClick={() => setQuality("720p")}>
+                  <b>720p</b>
+                  <small>Faster render</small>
+                </button>
+              </div>
+            </div>
             <p>
               {quality === "1080p" ? "1080p keeps more detail." : "720p makes a smaller file."}
               {format === "webm" ? " WebM takes longer to render." : ""}
@@ -1802,7 +1997,6 @@ export function EditorShell() {
   const [uploading, setUploading] = useState(false)
   const [voice, setVoice] = useState<VoiceState>("Disconnected")
   const [voiceDetail, setVoiceDetail] = useState<string | null>(null)
-  const [voiceLevel, setVoiceLevel] = useState(0)
   const [voiceLines, setVoiceLines] = useState<Array<{ who: "user" | "agent"; text: string }>>([])
   const [clipFrames, setClipFrames] = useState<Record<string, string[]>>({})
   const [activeClipId, setActiveClipId] = useState<string | null>(null)
@@ -1811,6 +2005,7 @@ export function EditorShell() {
   const [pushToTalk, setPushToTalk] = useState(false)
   const [booted, setBooted] = useState(false)
   const [inEditor, setInEditor] = useState(false)
+  const [resume, setResume] = useState<PresentedProject | null>(null)
   const [gateError, setGateError] = useState<string | null>(null)
   // Remembered timeline height, so a chosen size survives a reload. Clamped on
   // read because a stored value can predate a window resize.
@@ -1837,6 +2032,10 @@ export function EditorShell() {
    * playhead straight back to where it was. Ignore those for a moment.
    */
   const seekGuardRef = useRef<{ outputMs: number; until: number } | null>(null)
+  /** Last time the playhead was painted. Playback ticks are coalesced so the timeline does not rebuild every frame. */
+  const playheadAt = useRef(0)
+  /** Volume the creator is dragging, applied to the element before the mix is saved. */
+  const mixPreview = useRef<{ speech?: number; music?: number }>({})
 
   const applyTimelineHeight = useCallback((value: number) => {
     setTimelineHeight(clampTimelineHeight(value));
@@ -1937,10 +2136,10 @@ export function EditorShell() {
         // the token instead of failing every request with a bare 401.
         if (nextHealth.accessTokenRequired && !api.hasToken()) setNeedsToken(true)
         const usable = restored && restored.clips.length > 0 && restored.transcriptSource !== "demo-fixture"
-        if (usable && restored) {
-          remember(restored)
-          setInEditor(true)
-        } else if (existing) localStorage.removeItem(PROJECT_KEY)
+        // A saved project stays one click away. Opening the editor immediately
+        // hid the start page from anyone who had uploaded once.
+        if (usable && restored) setResume(restored)
+        else if (existing) localStorage.removeItem(PROJECT_KEY)
         setSaveStatus("Saved")
         setBooted(true)
       })
@@ -1983,6 +2182,16 @@ export function EditorShell() {
       void api.get(project.id)
         .then((next) => {
           failures = 0
+          const previous = projectRef.current
+          if (
+            previous &&
+            previous.revision === next.revision &&
+            previous.jobs.transcription.status === next.jobs.transcription.status &&
+            previous.jobs.transcription.progress === next.jobs.transcription.progress &&
+            previous.jobs.transcription.error === next.jobs.transcription.error &&
+            previous.jobs.export.status === next.jobs.export.status &&
+            previous.jobs.export.progress === next.jobs.export.progress
+          ) return
           remember(next)
         })
         .catch((error: Error) => {
@@ -2005,7 +2214,7 @@ export function EditorShell() {
     const transcribing = project?.jobs.transcription.status === "running"
     const exporting = project?.jobs.export.status === "running" || exportState === "processing"
     if (exporting) setStatus("Exporting…", true, "busy")
-    else if (transcribing) setStatus("Transcribing…", true, "busy")
+    else if (transcribing) setStatus("Transcribing…", false, "busy")
   }, [
     project?.jobs.transcription.status,
     project?.jobs.export.status,
@@ -2091,7 +2300,12 @@ export function EditorShell() {
 
   useEffect(() => {
     const video = videoRef.current
-    if (video && project) video.volume = Math.max(0, Math.min(1, project.edit.audio.speechVolume))
+    if (!video || !project) return
+    const saved = project.edit.audio.speechVolume
+    const preview = mixPreview.current.speech
+    if (preview != null && Math.abs(preview - saved) > 0.001) return
+    mixPreview.current.speech = undefined
+    video.volume = Math.max(0, Math.min(1, saved))
   }, [project?.edit.audio.speechVolume])
 
   useEffect(() => {
@@ -2268,6 +2482,14 @@ export function EditorShell() {
   const handleVideoTimeUpdate = useCallback((video: HTMLVideoElement) => {
     const current = projectRef.current
     if (!current) return
+    // Playing paints the playhead about ten times a second. A scrub or a clip
+    // change still lands immediately, so the thumb does not lag a gesture.
+    const showTime = (seconds: number, immediate = false) => {
+      const now = performance.now()
+      if (!immediate && now - playheadAt.current < 90) return
+      playheadAt.current = now
+      setCurrentTime(seconds)
+    }
     const localMs = video.currentTime * 1000
     const loadedId = activeClipId ?? current.clips?.[0]?.id ?? null
     if (loadedId && loadedId !== activeClipId) setActiveClipId(loadedId)
@@ -2283,13 +2505,13 @@ export function EditorShell() {
           pendingSeekRef.current = 0
           pendingPlayRef.current = true
           setActiveClipId(next.id)
-          setCurrentTime(next.offsetMs / 1000)
+          showTime(next.offsetMs / 1000, true)
           return
         }
         video.pause()
         setPlaying(false)
       }
-      setCurrentTime((clip.offsetMs + localMs) / 1000)
+      showTime((clip.offsetMs + localMs) / 1000, video.paused)
       setPlaying(!video.paused)
       return
     }
@@ -2332,7 +2554,7 @@ export function EditorShell() {
       pendingSeekRef.current = segment.clipStartMs
       pendingPlayRef.current = !video.paused
       setActiveClipId(segment.clipId)
-      setCurrentTime(segment.outputStartMs / 1000)
+      showTime(segment.outputStartMs / 1000, true)
       return
     }
     if (localMs < segment.clipStartMs - 40 || localMs > segment.clipEndMs + 40) {
@@ -2347,9 +2569,9 @@ export function EditorShell() {
     if (guard && performance.now() < guard.until) {
       if (Math.abs(outputMs - guard.outputMs) > 400) return
       seekGuardRef.current = null
-      setCurrentTime(guard.outputMs / 1000)
+      showTime(guard.outputMs / 1000, true)
     } else {
-      setCurrentTime(outputMs / 1000)
+      showTime(outputMs / 1000, video.paused)
     }
     setPlaying(!video.paused)
 
@@ -2363,9 +2585,10 @@ export function EditorShell() {
       const speechActive = current.transcript?.words.some(
         (word) => sourceMs >= word.startMs && sourceMs <= word.endMs,
       ) ?? false
+      const musicLevel = mixPreview.current.music ?? current.edit.audio.musicVolume
       music.volume = Math.max(
         0,
-        Math.min(1, current.edit.audio.musicVolume * (current.edit.audio.duckMusic && speechActive ? .42 : 1)),
+        Math.min(1, musicLevel * (current.edit.audio.duckMusic && speechActive ? .42 : 1)),
       )
       if (Math.abs(music.currentTime - outputMs / 1000) > .35)
         music.currentTime = (outputMs / 1000) % Math.max(1, music.duration || outputMs / 1000 + 1)
@@ -2424,6 +2647,7 @@ export function EditorShell() {
     voiceRef.current?.end()
     voiceRef.current = null
     setVoice("Disconnected")
+    let stored = false
     try {
       const first = files[0]
       const current = projectRef.current ?? await api.create(first.name.replace(/\.[^.]+$/, ""))
@@ -2434,24 +2658,26 @@ export function EditorShell() {
         setStatus(files.length > 1 ? `Uploading clip ${index + 1} of ${files.length}…` : "Uploading…", false, "busy")
         latest = await api.upload(latest.id, file)
         remember(latest)
+        stored = true
       }
       setSelectedSentenceId(null)
       setCurrentTime(0)
       setPlaying(false)
-      // No client-side pre-flight check on the API key. `health` loads in a
-      // background effect, so testing it here reported a missing key whenever
-      // it had not resolved yet, and the upload had already succeeded by then.
-      // The server returns a clear message when the key really is absent.
-      setStatus(files.length > 1 ? "Transcribing clips…" : "Transcribing…", false, "busy")
       setActiveTool("transcript")
       setMobileTab("edit")
-      const transcribing = await api.transcribe(latest.id)
-      remember(transcribing)
+      // The editor opens as soon as the file is stored. Transcription is
+      // queued next and keeps running after this returns.
       setInEditor(true)
-      setStatus("Saved")
+      setResume(null)
+      setStatus(files.length > 1 ? "Transcribing clips…" : "Transcribing…", false, "busy")
       return true
     } catch (error) {
       const message = error instanceof Error ? error.message : "Upload failed."
+      if (stored) {
+        setInEditor(true)
+        setStatus(message, false, "error")
+        return true
+      }
       setGateError(message)
       setStatus(message, false, "error")
       return false
@@ -2467,15 +2693,29 @@ export function EditorShell() {
   const transcribe = useCallback(async (clipId?: string) => {
     const current = projectRef.current
     if (!current) return
-    setStatus("Transcribing…", false)
+    setStatus("Transcribing…", false, "busy")
     try {
       const next = await api.transcribe(current.id, clipId)
       remember(next)
-      setStatus("Transcription started.", false)
+      if (next.jobs.transcription.status !== "running") setStatus("Saved")
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Transcription failed.", false)
+      setStatus(error instanceof Error ? error.message : "Transcription failed.", false, "error")
     }
   }, [remember, setStatus])
+
+  // Uploads and a resumed project both land here. One attempt per set of
+  // clips that still have no words, so a stuck job is picked up again and a
+  // finished transcript is not sent twice.
+  const transcriptKick = useRef("")
+  useEffect(() => {
+    if (!inEditor || !project) return
+    const missing = project.clips.filter((clip) => !clip.transcript).map((clip) => clip.id)
+    if (missing.length === 0) return
+    const token = `${project.id}:${missing.join(",")}`
+    if (transcriptKick.current === token) return
+    transcriptKick.current = token
+    void transcribe()
+  }, [inEditor, project, transcribe])
 
   const removeClip = useCallback(async (clipId: string) => {
     const current = projectRef.current
@@ -2551,7 +2791,6 @@ export function EditorShell() {
     voiceRef.current = null
     setVoice("Disconnected")
     setVoiceDetail(null)
-    setVoiceLevel(0)
   }, [])
 
   const startVoice = useCallback(async () => {
@@ -2574,7 +2813,7 @@ export function EditorShell() {
         onLine: (who, text) => {
           setVoiceLines((lines) => [...lines.filter((line) => !(line.who === who && line.text === text)), { who, text }].slice(-12))
         },
-        onLevel: setVoiceLevel,
+        onLevel: () => undefined,
         onProject: remember,
         onSeek: (outputMs) => seek(outputMs / 1000),
         snapshot: () => ({
@@ -2753,7 +2992,15 @@ export function EditorShell() {
         music={project?.music?.filename ?? null}
         musicVolume={Math.round((project?.edit.audio.musicVolume ?? .18) * 100)}
         duckMusic={project?.edit.audio.duckMusic ?? true}
-        onVolume={(value) => void runTool("set_audio_mix", { speech_volume: value / 100 })}
+        onVolumeLive={(value) => {
+          const level = Math.max(0, Math.min(1, value / 100))
+          mixPreview.current.speech = level
+          if (videoRef.current) videoRef.current.volume = level
+        }}
+        onVolume={(value) => {
+          mixPreview.current.speech = value / 100
+          void runTool("set_audio_mix", { speech_volume: value / 100 })
+        }}
         onMusicFile={(file) => {
           const current = projectRef.current
           if (!current) return
@@ -2761,7 +3008,13 @@ export function EditorShell() {
           void api.uploadMusic(current.id, file).then(remember).then(() => setStatus("Saved")).catch((error: Error) => setStatus(error.message, false))
         }}
         onRemoveMusic={() => void runTool("remove_music", {})}
-        onMusicVolume={(value) => void runTool("set_audio_mix", { music_volume: value / 100 })}
+        onMusicVolumeLive={(value) => {
+          mixPreview.current.music = Math.max(0, Math.min(1, value / 100))
+        }}
+        onMusicVolume={(value) => {
+          mixPreview.current.music = value / 100
+          void runTool("set_audio_mix", { music_volume: value / 100 })
+        }}
         onDuckMusic={(enabled) => void runTool("set_audio_mix", { duck_music: enabled })}
       />
     )
@@ -2838,7 +3091,19 @@ export function EditorShell() {
           busy={uploading}
           status={saveStatus}
           error={gateError}
-          onFiles={(files) => void upload(files)}
+          resumeTitle={resume?.title ?? null}
+          onResume={() => {
+            if (!resume) return
+            remember(resume)
+            setActiveTool("transcript")
+            setInEditor(true)
+          }}
+          onFiles={(files) => {
+            // The start page begins a project. Leaving the previous one in
+            // memory would append the new file onto it.
+            projectRef.current = null
+            void upload(files)
+          }}
         />
         {needsToken && (
           <AccessTokenGate
@@ -2871,6 +3136,13 @@ export function EditorShell() {
         canUndo={Boolean(project?.undo.length)}
         canRedo={Boolean(project?.redo.length)}
         onMore={() => setMoreOpen(true)}
+        onHome={() => {
+          const current = projectRef.current
+          if (current && current.clips.length > 0 && current.transcriptSource !== "demo-fixture") setResume(current)
+          setPlaying(false)
+          videoRef.current?.pause()
+          setInEditor(false)
+        }}
       />
       <ToolNavigation active={activeTool} onChange={changeTool} />
       <div className="workspace">
@@ -2901,7 +3173,7 @@ export function EditorShell() {
             voice={
               <FloatingAssistant
                 state={voice}
-                level={voiceLevel}
+                level={0}
                 detail={voiceDetail}
                 lines={voiceLines}
                 pushToTalk={pushToTalk}
@@ -2931,7 +3203,8 @@ export function EditorShell() {
                   changeTool(tab === "edit" ? "transcript" : tab)
                 }}
               >
-                {tab[0].toUpperCase() + tab.slice(1)}
+                <Icon name={tab === "edit" ? "document" : tab === "captions" ? "captions" : "wave"} size={15} />
+                {tab === "edit" ? "Transcript" : tab[0].toUpperCase() + tab.slice(1)}
               </button>
             ))}
           </div>

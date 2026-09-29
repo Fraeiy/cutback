@@ -96,6 +96,45 @@ function sendProject(project: Project) {
 }
 
 /**
+ * In-memory transcription runs. The job status on disk can say "running" after
+ * a restart even though nothing is polling AssemblyAI; this map is the only
+ * proof a worker is actually alive. A new upload bumps the generation so the
+ * old worker cannot mark the new run finished or failed.
+ */
+type TranscriptionRun = { generation: number; pending: string[]; active: Set<string> };
+const transcriptionRuns = new Map<string, TranscriptionRun>();
+
+function stopTranscription(id: string): void {
+  const run = transcriptionRuns.get(id);
+  if (!run) return;
+  run.generation += 1;
+  run.pending = [];
+  run.active.clear();
+  transcriptionRuns.delete(id);
+}
+
+function transcriptionCurrent(id: string, generation: number): TranscriptionRun | null {
+  const run = transcriptionRuns.get(id);
+  return run && run.generation === generation ? run : null;
+}
+
+function enqueueTranscription(id: string, key: string, clipIds: string[]): void {
+  let run = transcriptionRuns.get(id);
+  if (!run) {
+    run = { generation: 1, pending: [], active: new Set() };
+    transcriptionRuns.set(id, run);
+    const generation = run.generation;
+    const work = runTranscription(id, key, generation);
+    if (process.env.VERCEL) waitUntil(work);
+    else void work;
+  }
+  for (const clipId of clipIds) {
+    if (run.pending.includes(clipId) || run.active.has(clipId)) continue;
+    run.pending.push(clipId);
+  }
+}
+
+/**
  * A clip change invalidates both the rendered file and the transcript job: the
  * new clip has no words yet, and the export is stale either way.
  */
@@ -290,6 +329,7 @@ app.post("/api/projects/:id/uploads/attach", async (request, reply) => {
       hasAudio: probed.hasAudio,
       mime: String(body.contentType || "video/mp4"),
     });
+    stopTranscription(id);
     resetJobs(project);
     await saveProject(project);
     return sendProject(project);
@@ -347,6 +387,7 @@ app.post("/api/projects/:id/media", async (request, reply) => {
       hasAudio: probed.hasAudio,
       mime: incoming.mimetype || "video/mp4",
     });
+    stopTranscription(id);
     resetJobs(project);
     await saveProject(project);
     return sendProject(project);
@@ -361,6 +402,7 @@ app.delete("/api/projects/:id/clips/:clipId", async (request, reply) => {
     const clip = (project.clips ?? []).find((item) => item.id === clipId);
     if (!clip) return reply.code(404).send({ error: "That clip is not on the timeline." });
     removeClip(project, clipId);
+    stopTranscription(id);
     resetJobs(project);
     if (!usesBlobStorage()) await rm(path.join(projectDir(id), clip.media.storedName), { force: true });
     await saveProject(project);
@@ -433,63 +475,95 @@ app.post("/api/projects/:id/transcribe", async (request, reply) => {
     const project = await loadProject(id);
     const clips = project.clips ?? [];
     if (clips.length === 0) return { error: "Upload a video first.", code: 400 };
-    if (project.jobs.transcription.status === "running") return { error: "Transcription is already running.", code: 409 };
-    // A single clipId transcribes just that clip; otherwise every clip still
-    // missing words, so "add a clip then transcribe" just works.
-    const targets = body.clipId
-      ? clips.filter((clip) => clip.id === body.clipId)
-      : clips.filter((clip) => !clip.transcript);
-    const queue = targets.length > 0 ? targets : clips;
-    if (queue.length === 0) return { error: "Nothing to transcribe.", code: 400 };
+    // A single clipId transcribes just that clip. Otherwise queue every clip
+    // that still has no words. A job already marked running is not an error:
+    // the worker may have died on restart, and a second clip has to join the
+    // one that is already in flight.
+    const known = new Set(clips.map((clip) => clip.id));
+    const queue = body.clipId
+      ? (known.has(body.clipId) ? [body.clipId] : null)
+      : clips.filter((clip) => !clip.transcript).map((clip) => clip.id);
+    if (queue === null) return { error: "That clip is not on the timeline.", code: 404 };
+    if (queue.length === 0 && !transcriptionRuns.has(id)) return { ok: true, queue };
     project.jobs.transcription = {
       status: "running",
       error: null,
-      progress: 0.05,
+      progress: project.jobs.transcription.status === "running" ? project.jobs.transcription.progress : 0.05,
       updatedAt: new Date().toISOString(),
-      transcriptId: null,
+      transcriptId: project.jobs.transcription.transcriptId,
     };
     await saveProject(project);
-    return { ok: true, queue: queue.map((clip) => clip.id) };
+    return { ok: true, queue };
   });
   if ("error" in started) return reply.code(started.code).send({ error: started.error });
-  const work = runTranscription(id, key, started.queue);
-  if (process.env.VERCEL) waitUntil(work);
-  else void work;
+  if (started.queue.length > 0) enqueueTranscription(id, key, started.queue);
   const project = await loadProject(id);
   return sendProject(project);
 });
 
-async function runTranscription(id: string, key: string, clipIds: string[]): Promise<void> {
+async function runTranscription(id: string, key: string, generation: number): Promise<void> {
   try {
-    for (let index = 0; index < clipIds.length; index += 1) {
-      const clipId = clipIds[index];
-      const share = 1 / clipIds.length;
-      const base = index * share;
+    for (;;) {
+      const run = transcriptionCurrent(id, generation);
+      if (!run) return;
+      const clipId = run.pending.shift();
+      if (!clipId) {
+        await withProjectLock(id, async () => {
+          if (!transcriptionCurrent(id, generation)) return;
+          if ((transcriptionRuns.get(id)?.pending.length ?? 0) > 0) return;
+          const current = await loadProject(id);
+          if (!transcriptionCurrent(id, generation)) return;
+          if ((transcriptionRuns.get(id)?.pending.length ?? 0) > 0) return;
+          current.jobs.transcription = {
+            status: "completed",
+            error: null,
+            progress: 1,
+            updatedAt: new Date().toISOString(),
+            transcriptId: current.jobs.transcription.transcriptId,
+          };
+          await saveProject(current);
+        });
+        const still = transcriptionCurrent(id, generation);
+        if (still && still.pending.length > 0) continue;
+        if (transcriptionRuns.get(id)?.generation === generation) transcriptionRuns.delete(id);
+        return;
+      }
       const project = await loadProject(id);
       const clip = (project.clips ?? []).find((item) => item.id === clipId);
-      if (!clip) continue;
+      const currentRun = transcriptionCurrent(id, generation);
+      if (!clip || !currentRun) continue;
+      currentRun.active.add(clipId);
       const filePath = await materializeProjectFile(id, clip.media.storedName);
       const uploadUrl = await uploadMedia(filePath, key);
+      if (!transcriptionCurrent(id, generation)) return;
       const transcriptId = await submitTranscript(uploadUrl, key);
       await withProjectLock(id, async () => {
+        if (!transcriptionCurrent(id, generation)) return;
         const current = await loadProject(id);
+        current.jobs.transcription.status = "running";
+        current.jobs.transcription.error = null;
         current.jobs.transcription.transcriptId = transcriptId;
-        current.jobs.transcription.progress = base + share * 0.2;
+        current.jobs.transcription.progress = 0.2;
         current.jobs.transcription.updatedAt = new Date().toISOString();
         await saveProject(current);
       });
+      if (!transcriptionCurrent(id, generation)) return;
       const completed = await pollTranscript(transcriptId, key, async (status) => {
+        if (!transcriptionCurrent(id, generation)) return;
         await withProjectLock(id, async () => {
+          if (!transcriptionCurrent(id, generation)) return;
           const current = await loadProject(id);
           if (current.jobs.transcription.status !== "running") return;
-          current.jobs.transcription.progress = base + share * (status === "processing" ? 0.55 : 0.35);
+          current.jobs.transcription.progress = status === "processing" ? 0.55 : 0.35;
           current.jobs.transcription.updatedAt = new Date().toISOString();
           await saveProject(current);
         });
       });
+      if (!transcriptionCurrent(id, generation)) return;
       const sentences = await fetchSentences(transcriptId, key);
       const transcript = toTranscript(transcriptId, completed.model, completed.text, sentences, completed.words);
       await withProjectLock(id, async () => {
+        if (!transcriptionCurrent(id, generation)) return;
         const current = await loadProject(id);
         setClipTranscript(current, clipId, transcript, "assemblyai");
         // Keep spans are absolute source times, so a new transcript does not
@@ -511,21 +585,13 @@ async function runTranscription(id: string, key: string, clipIds: string[]): Pro
         };
         await saveProject(current);
       });
+      transcriptionCurrent(id, generation)?.active.delete(clipId);
     }
-    await withProjectLock(id, async () => {
-      const current = await loadProject(id);
-      current.jobs.transcription = {
-        status: "completed",
-        error: null,
-        progress: 1,
-        updatedAt: new Date().toISOString(),
-        transcriptId: current.jobs.transcription.transcriptId,
-      };
-      await saveProject(current);
-    });
   } catch (error) {
+    if (!transcriptionCurrent(id, generation)) return;
     const message = error instanceof Error ? error.message : "Transcription failed.";
     await withProjectLock(id, async () => {
+      if (!transcriptionCurrent(id, generation)) return;
       const current = await loadProject(id);
       current.jobs.transcription = {
         status: "error",
@@ -536,6 +602,7 @@ async function runTranscription(id: string, key: string, clipIds: string[]): Pro
       };
       await saveProject(current);
     }).catch(() => undefined);
+    if (transcriptionRuns.get(id)?.generation === generation) transcriptionRuns.delete(id);
   }
 }
 

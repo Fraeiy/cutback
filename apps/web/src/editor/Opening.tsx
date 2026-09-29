@@ -11,11 +11,15 @@ export function Opening({
   busy,
   status,
   error,
+  resumeTitle,
+  onResume,
   onFiles,
 }: {
   busy: boolean
   status: string
   error: string | null
+  resumeTitle?: string | null
+  onResume?: () => void
   onFiles: (files: File[]) => void
 }) {
   const input = useRef<HTMLInputElement>(null)
@@ -110,6 +114,11 @@ export function Opening({
         {!busy && (
           <button className="primary opening-choose" type="button" onClick={() => input.current?.click()}>
             Choose a video
+          </button>
+        )}
+        {!busy && resumeTitle && onResume && (
+          <button className="opening-resume" type="button" onClick={onResume}>
+            Continue {resumeTitle}
           </button>
         )}
         <p className="opening-meta">MP4, MOV, WEBM, or MKV. Up to 2 minutes and 200 MB a clip. Several files can go in together.</p>
